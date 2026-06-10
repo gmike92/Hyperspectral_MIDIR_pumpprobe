@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.venv/
+venv/
+env/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Qt / app settings
+*.ini
+
+# Data outputs (lab scans)
+scan_data/
+data/
+*.npz
+*.npy
+*.csv
+
+# Images / screenshots
+Screenshot*.png
+*.png
+!docs/*.png
+
+# Local notes
+.claude/
+_archive/
