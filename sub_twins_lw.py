@@ -71,7 +71,12 @@ class SpectrumProcessor:
         self.calibration_file = calibration_file or DEFAULT_CALIBRATION_FILE
         self.wavelength_cal = None
         self.reciprocal_cal = None
+        # Position-axis (motor nonlinearity) calibration: reference interferogram
+        # measured with a known source. Used by get_calibrated_position_axis().
+        self.position_ref = None
+        self.amplitude_ref = None
         self._load_calibration()
+        self._load_position_calibration()
 
     def _load_calibration(self):
         """Load calibration file for wavelength conversion."""
@@ -101,6 +106,94 @@ class SpectrumProcessor:
 
         except Exception as e:
             print(f"[WARN] Error loading calibration: {e}")
+
+    def _load_position_calibration(self):
+        """Load motor-nonlinearity calibration (parameters_int.txt: reference IFG).
+
+        Format: row 0 = nominal positions (mm), row 1 = reference interferogram
+        amplitudes. Acquired once in the lab with a known-wavelength source so
+        the motor's reproducible nonlinearity can be removed from every scan.
+        """
+        try:
+            import pandas as pd
+            paths = [
+                Path(r".\Twins\ASRC calibration\parameters_int.txt"),
+                Path(r"C:\Users\mguizzardi\Desktop\Camera python\TWINS FILE\Twins\ASRC calibration\parameters_int.txt"),
+            ]
+            for p in paths:
+                if p.exists():
+                    ref = pd.read_csv(p, sep="\t", header=None)
+                    self.position_ref = ref.iloc[0].to_numpy(dtype='float64')
+                    self.amplitude_ref = ref.iloc[1].to_numpy(dtype='float64')
+                    print(f"[OK] Loaded position calibration: {p.name}")
+                    return
+            print("[WARN] parameters_int.txt not found — motor jitter correction disabled.")
+        except Exception as e:
+            print(f"[WARN] Error loading position calibration: {e}")
+
+    def _get_real_position_axis(self, reference):
+        """Recover the actual position axis from a reference interferogram via
+        the analytic-signal phase trick (NIREOS get_real_position_axis).
+
+        Zero out negative frequencies in FFT(reference) → iFFT → unwrap phase →
+        normalize to [0, 1]. This is the real (jitter-corrected) position the
+        motor visited, in normalized units.
+        """
+        ref = np.asarray(reference).squeeze()
+        fft_ref = np.fft.fft(ref)
+        half = int(np.floor(len(ref) / 2) - 1)
+        if half > 0:
+            fft_ref[:half] = 0.0
+        phase = np.unwrap(-np.angle(np.fft.ifft(fft_ref)))
+        a, b = float(phase.min()), float(phase.max())
+        if b - a == 0:
+            return np.linspace(0.0, 1.0, len(ref))
+        return (phase - a) / (b - a)
+
+    def get_calibrated_position_axis(self, position_axis):
+        """Map the user's nominal position axis (mm) onto the corrected axis
+        derived from the stored reference interferogram (parameters_int.txt).
+        Returns the same length as `position_axis`. Falls back to the input
+        unchanged if the position calibration isn't loaded.
+        """
+        if self.position_ref is None or self.amplitude_ref is None:
+            return np.asarray(position_axis)
+
+        try:
+            from scipy import interpolate as _interp
+            position_axis = np.asarray(position_axis).squeeze()
+            if position_axis.size < 4:
+                return position_axis
+
+            # Oversample factor: ratio of user vs reference step sizes
+            d_user = float(np.mean(np.diff(position_axis)))
+            d_ref = float(np.mean(np.diff(self.position_ref)))
+            if d_ref == 0:
+                return position_axis
+            factor = int(max(1, np.ceil(abs(d_user / d_ref))))
+
+            # Oversample user positions, then interpolate stored reference IFG onto them
+            oversmp_pos = np.linspace(position_axis[0], position_axis[-1],
+                                      factor * position_axis.size)
+            f_ref = _interp.interp1d(self.position_ref, self.amplitude_ref,
+                                     kind='cubic', bounds_error=False,
+                                     fill_value=(self.amplitude_ref[0],
+                                                 self.amplitude_ref[-1]))
+            ref_interp = f_ref(oversmp_pos)
+
+            calib_norm = self._get_real_position_axis(ref_interp)
+            calib_overs = calib_norm * (position_axis[-1] - position_axis[0]) + position_axis[0]
+            calibrated = calib_overs[0:-1:factor]
+            # Trim/pad to match original length so downstream code is unchanged
+            if calibrated.size >= position_axis.size:
+                return calibrated[:position_axis.size]
+            # short: extend with last delta
+            pad = np.full(position_axis.size - calibrated.size,
+                          calibrated[-1] if calibrated.size else 0.0)
+            return np.concatenate([calibrated, pad])
+        except Exception as e:
+            print(f"[WARN] Position calibration failed, using raw axis: {e}")
+            return np.asarray(position_axis)
 
     def set_data(self, positions, interferogram):
         self.positions = positions
@@ -263,7 +356,11 @@ class SpectrumProcessor:
         if invert:
             signal = -signal
 
-        c_positions = self.positions
+        # Apply motor-nonlinearity calibration: replace the nominal stage axis
+        # with the jitter-corrected axis derived from parameters_int.txt.
+        c_positions = self.get_calibrated_position_axis(self.positions)
+        # Keep both axes available for saving / inspection.
+        self.calibrated_positions = c_positions
 
         # Cache the burst-center index on the first call and reuse it thereafter.
         # The cache is cleared via reset_center() when a new scan is loaded/acquired.
@@ -1106,6 +1203,7 @@ class TwinsWindow(QtWidgets.QWidget):
             
             save_dict = {
                 'positions': self.scan_positions,
+                'positions_calibrated': np.asarray(getattr(self.processor, 'calibrated_positions', None)) if getattr(self.processor, 'calibrated_positions', None) is not None else np.array([]),
                 'interferogram': self.interferogram,
                 'wavelengths': self.wavelengths,
                 'spectrum': self.spectrum,
@@ -1184,6 +1282,7 @@ class TwinsWindow(QtWidgets.QWidget):
         if filepath:
             data = {
                 'positions': self.scan_positions,
+                'positions_calibrated': getattr(self.processor, 'calibrated_positions', None),
                 'interferogram': self.interferogram,
                 'wavelengths': self.wavelengths,
                 'spectrum': self.spectrum,

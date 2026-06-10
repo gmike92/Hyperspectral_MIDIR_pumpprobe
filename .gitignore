@@ -25,6 +25,9 @@ data/
 *.npz
 *.npy
 *.csv
+# ...but keep calibration files
+!Twins/**/*.csv
+!Twins/**/*.txt
 
 # Images / screenshots
 Screenshot*.png
