@@ -58,31 +58,13 @@ class HyperspectralProcessor:
     """
 
     def __init__(self, calibration_file=None):
-        self.calibration_file = calibration_file or DEFAULT_CALIBRATION_FILE
-        self.wavelength_cal = None
-        self.reciprocal_cal = None
-        self._load_calibration()
+        from calibration import get_spectral_calibration
 
-    def _load_calibration(self):
-        try:
-            import pandas as pd
-            cal_path = Path(self.calibration_file)
-            if not cal_path.exists():
-                alt_paths = [
-                    Path(r"C:\Users\mguizzardi\Desktop\Camera python\TWINS FILE\Twins\ASRC calibration\parameters_cal.txt"),
-                    Path(r".\Twins\ASRC calibration\parameters_cal.txt"),
-                ]
-                for alt in alt_paths:
-                    if alt.exists():
-                        cal_path = alt
-                        break
-            if cal_path.exists():
-                ref = pd.read_csv(cal_path, sep="\t", header=None)
-                self.wavelength_cal = ref.iloc[0].to_numpy(dtype='float64')
-                self.reciprocal_cal = ref.iloc[1].to_numpy(dtype='float64')
-                print(f"[OK] KSpace: Loaded calibration: {cal_path.name}")
-        except Exception as e:
-            print(f"[WARN] KSpace calibration: {e}")
+        # Shared spectral calibration (loaded once at module import).
+        self.wavelength_cal, self.reciprocal_cal = get_spectral_calibration()
+
+        # Stage axis after motor-jitter correction (populated by compute_hyperspectral).
+        self.calibrated_positions = None
 
     def _get_frequency_limits(self, wl_start, wl_stop):
         if self.wavelength_cal is not None and self.reciprocal_cal is not None:
@@ -114,11 +96,16 @@ class HyperspectralProcessor:
         n_pos, h, w = datacube.shape
         if n_pos < 3:
             return None, None
-            
+
         if invert:
             datacube = -datacube
             if reference_cube is not None:
                 reference_cube = -reference_cube
+
+        # Apply motor-nonlinearity calibration to the position axis (shared module).
+        from calibration import calibrate_position_axis
+        positions = calibrate_position_axis(positions)
+        self.calibrated_positions = positions
 
         sym_flag = hasattr(self, 'chk_asymmetric') and self.chk_asymmetric.isChecked()
         
@@ -1034,9 +1021,11 @@ class KSpaceWindow(QtWidgets.QWidget):
                 )
             
             os.makedirs(os.path.dirname(self.scan_npz_path), exist_ok=True)
+            cal_pos = getattr(self.processor, 'calibrated_positions', None)
             try:
                 np.savez(self.scan_npz_path,
                          positions=self.scan_positions,
+                         positions_calibrated=(np.asarray(cal_pos) if cal_pos is not None else np.array([])),
                          datacube=self.datacube,
                          data_t=self.cube_t if self.cube_t is not None else np.array([]),
                          data_dt=self.cube_dt if self.cube_dt is not None else np.array([]),
@@ -1192,8 +1181,10 @@ class KSpaceWindow(QtWidgets.QWidget):
             )
         
         if filepath:
+            cal_pos = getattr(self.processor, 'calibrated_positions', None)
             save_dict = {
                 'positions': self.scan_positions,
+                'positions_calibrated': (np.asarray(cal_pos) if cal_pos is not None else np.array([])),
                 'datacube': self.datacube,
             }
             if self.wavelengths is not None:

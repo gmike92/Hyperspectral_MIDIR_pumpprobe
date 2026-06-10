@@ -58,6 +58,8 @@ class SpectrumProcessor:
     """
 
     def __init__(self, calibration_file=None):
+        from calibration import get_spectral_calibration
+
         self.interferogram = None
         self.positions = None
         self.spectrum = None
@@ -68,132 +70,11 @@ class SpectrumProcessor:
         # Reset to None to force recomputation on the next call.
         self.center_idx = None
 
-        self.calibration_file = calibration_file or DEFAULT_CALIBRATION_FILE
-        self.wavelength_cal = None
-        self.reciprocal_cal = None
-        # Position-axis (motor nonlinearity) calibration: reference interferogram
-        # measured with a known source. Used by get_calibrated_position_axis().
-        self.position_ref = None
-        self.amplitude_ref = None
-        self._load_calibration()
-        self._load_position_calibration()
+        # Shared spectral calibration (loaded once at module import-time).
+        self.wavelength_cal, self.reciprocal_cal = get_spectral_calibration()
 
-    def _load_calibration(self):
-        """Load calibration file for wavelength conversion."""
-        try:
-            import pandas as pd
-
-            cal_path = Path(self.calibration_file)
-            if not cal_path.exists():
-                alt_paths = [
-                    Path(r"C:\Users\mguizzardi\Desktop\Camera python\TWINS FILE\Twins\ASRC calibration\parameters_cal.txt"),
-                    Path(r".\Twins\ASRC calibration\parameters_cal.txt"),
-                ]
-                for alt in alt_paths:
-                    if alt.exists():
-                        cal_path = alt
-                        break
-
-            if cal_path.exists():
-                ref = pd.read_csv(cal_path, sep="\t", header=None)
-                self.wavelength_cal = ref.iloc[0].to_numpy(dtype='float64')
-                self.reciprocal_cal = ref.iloc[1].to_numpy(dtype='float64')
-                print(f"[OK] Loaded calibration: {cal_path.name}")
-                print(f"     Wavelength range: {self.wavelength_cal.min():.2f} - {self.wavelength_cal.max():.2f} µm")
-            else:
-                print(f"[WARN] Calibration file not found: {self.calibration_file}")
-                print("       Using simple 1/frequency conversion")
-
-        except Exception as e:
-            print(f"[WARN] Error loading calibration: {e}")
-
-    def _load_position_calibration(self):
-        """Load motor-nonlinearity calibration (parameters_int.txt: reference IFG).
-
-        Format: row 0 = nominal positions (mm), row 1 = reference interferogram
-        amplitudes. Acquired once in the lab with a known-wavelength source so
-        the motor's reproducible nonlinearity can be removed from every scan.
-        """
-        try:
-            import pandas as pd
-            paths = [
-                Path(r".\Twins\ASRC calibration\parameters_int.txt"),
-                Path(r"C:\Users\mguizzardi\Desktop\Camera python\TWINS FILE\Twins\ASRC calibration\parameters_int.txt"),
-            ]
-            for p in paths:
-                if p.exists():
-                    ref = pd.read_csv(p, sep="\t", header=None)
-                    self.position_ref = ref.iloc[0].to_numpy(dtype='float64')
-                    self.amplitude_ref = ref.iloc[1].to_numpy(dtype='float64')
-                    print(f"[OK] Loaded position calibration: {p.name}")
-                    return
-            print("[WARN] parameters_int.txt not found — motor jitter correction disabled.")
-        except Exception as e:
-            print(f"[WARN] Error loading position calibration: {e}")
-
-    def _get_real_position_axis(self, reference):
-        """Recover the actual position axis from a reference interferogram via
-        the analytic-signal phase trick (NIREOS get_real_position_axis).
-
-        Zero out negative frequencies in FFT(reference) → iFFT → unwrap phase →
-        normalize to [0, 1]. This is the real (jitter-corrected) position the
-        motor visited, in normalized units.
-        """
-        ref = np.asarray(reference).squeeze()
-        fft_ref = np.fft.fft(ref)
-        half = int(np.floor(len(ref) / 2) - 1)
-        if half > 0:
-            fft_ref[:half] = 0.0
-        phase = np.unwrap(-np.angle(np.fft.ifft(fft_ref)))
-        a, b = float(phase.min()), float(phase.max())
-        if b - a == 0:
-            return np.linspace(0.0, 1.0, len(ref))
-        return (phase - a) / (b - a)
-
-    def get_calibrated_position_axis(self, position_axis):
-        """Map the user's nominal position axis (mm) onto the corrected axis
-        derived from the stored reference interferogram (parameters_int.txt).
-        Returns the same length as `position_axis`. Falls back to the input
-        unchanged if the position calibration isn't loaded.
-        """
-        if self.position_ref is None or self.amplitude_ref is None:
-            return np.asarray(position_axis)
-
-        try:
-            from scipy import interpolate as _interp
-            position_axis = np.asarray(position_axis).squeeze()
-            if position_axis.size < 4:
-                return position_axis
-
-            # Oversample factor: ratio of user vs reference step sizes
-            d_user = float(np.mean(np.diff(position_axis)))
-            d_ref = float(np.mean(np.diff(self.position_ref)))
-            if d_ref == 0:
-                return position_axis
-            factor = int(max(1, np.ceil(abs(d_user / d_ref))))
-
-            # Oversample user positions, then interpolate stored reference IFG onto them
-            oversmp_pos = np.linspace(position_axis[0], position_axis[-1],
-                                      factor * position_axis.size)
-            f_ref = _interp.interp1d(self.position_ref, self.amplitude_ref,
-                                     kind='cubic', bounds_error=False,
-                                     fill_value=(self.amplitude_ref[0],
-                                                 self.amplitude_ref[-1]))
-            ref_interp = f_ref(oversmp_pos)
-
-            calib_norm = self._get_real_position_axis(ref_interp)
-            calib_overs = calib_norm * (position_axis[-1] - position_axis[0]) + position_axis[0]
-            calibrated = calib_overs[0:-1:factor]
-            # Trim/pad to match original length so downstream code is unchanged
-            if calibrated.size >= position_axis.size:
-                return calibrated[:position_axis.size]
-            # short: extend with last delta
-            pad = np.full(position_axis.size - calibrated.size,
-                          calibrated[-1] if calibrated.size else 0.0)
-            return np.concatenate([calibrated, pad])
-        except Exception as e:
-            print(f"[WARN] Position calibration failed, using raw axis: {e}")
-            return np.asarray(position_axis)
+        # Stage axis after motor-jitter correction (populated by compute_spectrum).
+        self.calibrated_positions = None
 
     def set_data(self, positions, interferogram):
         self.positions = positions
@@ -358,8 +239,9 @@ class SpectrumProcessor:
 
         # Apply motor-nonlinearity calibration: replace the nominal stage axis
         # with the jitter-corrected axis derived from parameters_int.txt.
-        c_positions = self.get_calibrated_position_axis(self.positions)
-        # Keep both axes available for saving / inspection.
+        from calibration import calibrate_position_axis
+        c_positions = calibrate_position_axis(self.positions)
+        # Keep the corrected axis available for saving / inspection.
         self.calibrated_positions = c_positions
 
         # Cache the burst-center index on the first call and reuse it thereafter.
