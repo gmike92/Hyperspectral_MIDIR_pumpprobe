@@ -90,7 +90,12 @@ class SpectrumProcessor:
         self.calibration_file = calibration_file or r".\Twins\ASRC calibration\parameters_cal.txt"
         self.wavelength_cal = None
         self.reciprocal_cal = None
+        # Motor-nonlinearity calibration (reference IFG from parameters_int.txt)
+        self.position_ref = None
+        self.amplitude_ref = None
+        self.calibrated_positions = None
         self._load_calibration()
+        self._load_position_calibration()
 
     def _load_calibration(self):
         """Load calibration file for wavelength conversion."""
@@ -119,6 +124,82 @@ class SpectrumProcessor:
 
         except Exception as e:
             print(f"[WARN] Error loading calibration: {e}")
+
+    def _load_position_calibration(self):
+        """Load motor-nonlinearity reference IFG (parameters_int.txt).
+
+        Row 0 = nominal positions (mm), row 1 = reference interferogram from a
+        known-wavelength source. Used by get_calibrated_position_axis to remove
+        the motor's reproducible nonlinearity from every scan.
+        """
+        try:
+            import pandas as pd
+            from pathlib import Path
+            paths = [
+                Path(r".\Twins\ASRC calibration\parameters_int.txt"),
+                Path(r"C:\Users\mguizzardi\Desktop\Camera python\TWINS FILE\Twins\ASRC calibration\parameters_int.txt"),
+            ]
+            for p in paths:
+                if p.exists():
+                    ref = pd.read_csv(p, sep="\t", header=None)
+                    self.position_ref = ref.iloc[0].to_numpy(dtype='float64')
+                    self.amplitude_ref = ref.iloc[1].to_numpy(dtype='float64')
+                    print(f"[OK] Loaded position calibration: {p.name}")
+                    return
+            print("[WARN] parameters_int.txt not found — motor jitter correction disabled.")
+        except Exception as e:
+            print(f"[WARN] Error loading position calibration: {e}")
+
+    def _get_real_position_axis(self, reference):
+        """Recover real position axis from a reference IFG via analytic-signal
+        phase trick: zero negative FFT freqs → unwrap iFFT phase → normalize."""
+        ref = np.asarray(reference).squeeze()
+        fft_ref = np.fft.fft(ref)
+        half = int(np.floor(len(ref) / 2) - 1)
+        if half > 0:
+            fft_ref[:half] = 0.0
+        phase = np.unwrap(-np.angle(np.fft.ifft(fft_ref)))
+        a, b = float(phase.min()), float(phase.max())
+        if b - a == 0:
+            return np.linspace(0.0, 1.0, len(ref))
+        return (phase - a) / (b - a)
+
+    def get_calibrated_position_axis(self, position_axis):
+        """Apply motor-nonlinearity correction. Returns input unchanged if the
+        position calibration isn't loaded."""
+        if self.position_ref is None or self.amplitude_ref is None:
+            return np.asarray(position_axis)
+        try:
+            from scipy import interpolate as _interp
+            position_axis = np.asarray(position_axis).squeeze()
+            if position_axis.size < 4:
+                return position_axis
+
+            d_user = float(np.mean(np.diff(position_axis)))
+            d_ref = float(np.mean(np.diff(self.position_ref)))
+            if d_ref == 0:
+                return position_axis
+            factor = int(max(1, np.ceil(abs(d_user / d_ref))))
+
+            oversmp_pos = np.linspace(position_axis[0], position_axis[-1],
+                                      factor * position_axis.size)
+            f_ref = _interp.interp1d(self.position_ref, self.amplitude_ref,
+                                     kind='cubic', bounds_error=False,
+                                     fill_value=(self.amplitude_ref[0],
+                                                 self.amplitude_ref[-1]))
+            ref_interp = f_ref(oversmp_pos)
+
+            calib_norm = self._get_real_position_axis(ref_interp)
+            calib_overs = calib_norm * (position_axis[-1] - position_axis[0]) + position_axis[0]
+            calibrated = calib_overs[0:-1:factor]
+            if calibrated.size >= position_axis.size:
+                return calibrated[:position_axis.size]
+            pad = np.full(position_axis.size - calibrated.size,
+                          calibrated[-1] if calibrated.size else 0.0)
+            return np.concatenate([calibrated, pad])
+        except Exception as e:
+            print(f"[WARN] Position calibration failed, using raw axis: {e}")
+            return np.asarray(position_axis)
 
     def moving_average(self, data, window):
         if window < 2:
@@ -203,9 +284,13 @@ class SpectrumProcessor:
         if invert:
             signal = -signal
 
+        # Apply motor-nonlinearity calibration to the position axis.
+        positions = self.get_calibrated_position_axis(positions)
+        self.calibrated_positions = positions
+
         if getattr(self, 'center_idx', None) is None:
             self.center_idx = np.argmax(signal)
-        
+
         c_idx = self.center_idx
 
         if symmetrize:
@@ -1424,6 +1509,7 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         if not hasattr(self, '_save_prefix'):
             return
         filename = f"{self._save_prefix}_step{idx:03d}_{delay_fs:.0f}fs.npz"
+        cal_pos = getattr(self.processor, 'calibrated_positions', None)
         np.savez(filename,
                  delay_fs=delay_fs,
                  wavelengths=wl,
@@ -1431,6 +1517,7 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
                  delta_t=delta_t,
                  interferogram=self.current_interferogram,
                  gemini_positions=self.gemini_positions,
+                 gemini_positions_calibrated=(np.asarray(cal_pos) if cal_pos is not None else np.array([])),
                  roi_datacube=np.array(self.current_roi_datacube) if self.current_roi_datacube else np.array([]),
                  # Selective
                  data_t=np.array(self.current_data_t) if hasattr(self,'current_data_t') and self.current_data_t else np.array([]),
