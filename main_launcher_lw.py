@@ -420,19 +420,25 @@ class MainLauncher(QtWidgets.QWidget):
     
     def _do_connect_twins(self):
         success = False
+        err = None
         try:
             success = self.twins_stage.connect()
         except Exception as e:
-            self._log(f"[WARN] Real connect failed: {e}")
-        
+            err = e
+            self._log(f"[ERROR] Twins connect failed: {e}")
+
         if success:
             self.led_twins.set_color("#4CAF50")
             self._log("[OK] Twins stage connected")
         else:
-            # Simulated connection for UI testing
-            self.twins_stage.is_connected = True
-            self.led_twins.set_color("#2196F3")  # blue = simulated
-            self._log("[SIM] Twins stage — simulated connection (no hardware)")
+            # No hardware — report the error, do NOT fake a connection
+            self.twins_stage.is_connected = False
+            self.led_twins.set_color("#f44336")  # red = error
+            self.connect_twins_btn.setEnabled(True)  # allow retry
+            self._log("[FAIL] Twins stage not connected")
+            msg = (f"Could not connect to the Twins stage.\n\n{err}" if err
+                   else "Could not connect to the Twins stage (no hardware detected).")
+            QtWidgets.QMessageBox.critical(self, "Twins Stage", msg)
     
     # =========================================================================
     # Sub-Windows

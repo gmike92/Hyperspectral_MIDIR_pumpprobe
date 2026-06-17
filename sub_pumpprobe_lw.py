@@ -28,6 +28,8 @@ except ImportError:
     raise ImportError("pyqtgraph required: pip install pyqtgraph pyqt6")
 
 from labview_manager import LabVIEWManager, CMD_IDLE, CMD_MEASURE
+from roi_state import ROIState
+from roi_readout import add_roi_readout
 
 # Physics
 SPEED_OF_LIGHT_MM_FS = 0.000299792458
@@ -42,8 +44,9 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
         super().__init__(parent)
         self.manager = manager
         self.delay_stage = delay_stage
-        self.live_window = live_window  # for ROI / pixel signal extraction
-        
+        self.live_window = live_window  # kept for back-compat (ROI now via ROIState)
+        self.roi_state = ROIState()     # shared ROI defined in Live View, read here
+
         # Scan state
         self.scanning = False
         self.scan_points_fs = []
@@ -76,6 +79,9 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
         )
         title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         left_layout.addWidget(title)
+
+        # Shared-ROI readout (verify it matches across all windows)
+        add_roi_readout(self, left_layout)
 
         # Zero position + Probe Toggle
         zero_group = QtWidgets.QGroupBox("Stage Settings")
@@ -199,25 +205,30 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
         # Plot Mode
         acq_layout.addWidget(QtWidgets.QLabel("Plot Mode:"), 4, 0)
         self.cmb_plot_mode = QtWidgets.QComboBox()
-        self.cmb_plot_mode.addItems(["DeltaT (dT/T)", "Transmission (T)", "DeltaT (dT)"])
-        self.cmb_plot_mode.setCurrentIndex(1) # Default Transmission (T)
+        self.cmb_plot_mode.addItems(["DT", "DT/T", "Ton", "Tavg"])
+        self.cmb_plot_mode.setCurrentIndex(3)  # Default Tavg = (odd+even)/2
         acq_layout.addWidget(self.cmb_plot_mode, 4, 1)
 
         # Data Saving Group
         save_group = QtWidgets.QGroupBox("Data to Save")
         save_layout = QtWidgets.QVBoxLayout(save_group)
         
-        self.chk_save_t = QtWidgets.QCheckBox("Transmission (T)")
-        self.chk_save_dt = QtWidgets.QCheckBox("DeltaT (dT)")
-        self.chk_save_dtt = QtWidgets.QCheckBox("DeltaT/T (%)")
+        self.chk_save_dt = QtWidgets.QCheckBox("DT")
+        self.chk_save_dtt = QtWidgets.QCheckBox("DT/T")
+        self.chk_save_ton = QtWidgets.QCheckBox("Ton")
+        self.chk_save_tavg = QtWidgets.QCheckBox("Tavg")
         self.chk_save_raw = QtWidgets.QCheckBox("Raw (Odd/Even)")
-        
-        # Defaults: dT/T on? Or user chooses? 
-        self.chk_save_dtt.setChecked(True) 
-        
-        save_layout.addWidget(self.chk_save_t)
+
+        # Default: save all four derived quantities
+        self.chk_save_dt.setChecked(True)
+        self.chk_save_dtt.setChecked(True)
+        self.chk_save_ton.setChecked(True)
+        self.chk_save_tavg.setChecked(True)
+
         save_layout.addWidget(self.chk_save_dt)
         save_layout.addWidget(self.chk_save_dtt)
+        save_layout.addWidget(self.chk_save_ton)
+        save_layout.addWidget(self.chk_save_tavg)
         save_layout.addWidget(self.chk_save_raw)
         
         acq_layout.addWidget(save_group, 5, 0, 1, 2)
@@ -392,21 +403,21 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
     
     def _extract(self, img):
         """Extract scalar signal for PLOTTING based on save mode."""
-        mode = self.cmb_save_mode.currentIndex() 
+        mode = self.cmb_save_mode.currentIndex()
         # 0=Single, 1=ROI Avg, 2=ROI(2D), 3=Full(2D)
-        
-        if self.live_window:
+
+        if self.roi_state:
             # Single Pixel
             if mode == 0:
-                r, c = self.live_window.sel_row, self.live_window.sel_col
+                r, c = self.roi_state.sel_row, self.roi_state.sel_col
                 if r is not None and c is not None:
                     h, w = img.shape
                     if 0 <= r < h and 0 <= c < w:
                         return float(img[r, c])
-            
+
             # ROI modes (Avg or 2D) -> Plot Mean of ROI
             if mode in [1, 2]:
-                bounds = self.live_window.get_roi_bounds()
+                bounds = self.roi_state.get_roi_bounds()
                 if bounds:
                     r0, r1, c0, c1 = bounds
                     h, w = img.shape
@@ -423,26 +434,26 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
         
         if mode == 3: # Full Frame
             return img.copy()
-            
-        if self.live_window:
+
+        if self.roi_state:
             # ROI modes
             if mode in [1, 2]:
-                bounds = self.live_window.get_roi_bounds()
+                bounds = self.roi_state.get_roi_bounds()
                 if bounds:
                     r0, r1, c0, c1 = bounds
                     h, w = img.shape
                     r0, r1 = max(0, min(r0, h)), max(1, min(r1, h))
                     c0, c1 = max(0, min(c0, w)), max(1, min(c1, w))
                     slice_img = img[r0:r1, c0:c1]
-                    
+
                     if mode == 1: # ROI Avg -> Save scalar (or 1x1)
                         return float(np.mean(slice_img))
                     else: # ROI 2D -> Save slice
                         return slice_img.copy()
-            
+
             # Single Pixel
             if mode == 0:
-                r, c = self.live_window.sel_row, self.live_window.sel_col
+                r, c = self.roi_state.sel_row, self.roi_state.sel_col
                 if r is not None and c is not None:
                     h, w = img.shape
                     if 0 <= r < h and 0 <= c < w:
@@ -631,7 +642,8 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
         
         # Data Storage
         self.roi_datacube = []    # CLEAR datacube!
-        self.data_t = []
+        self.data_ton = []
+        self.data_tavg = []
         self.data_dt = []
         self.data_dtt = []
         self.raw_odd = []
@@ -842,9 +854,10 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
                 
                 # Plot choice
                 pmode = self.cmb_plot_mode.currentIndex()
-                if pmode == 1:   img = img_t
-                elif pmode == 2: img = img_dt
-                else:            img = img_dtt
+                if pmode == 0:   img = img_dt     # DT
+                elif pmode == 1: img = img_dtt    # DT/T
+                elif pmode == 2: img = even       # Ton
+                else:            img = img_t       # Tavg
 
                 # Skip empty data check (on display img)
                 if img.size == 0:
@@ -856,9 +869,11 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
                 
                 signal = self._extract(img)
                 
-                # Save Selected — T = pumped transmission (even frames), not (odd+even)/2
-                if self.chk_save_t.isChecked():
-                    self.data_t.append(self._extract_to_save(even))
+                # Save selected — Ton=even (pump on), Tavg=(odd+even)/2, DT=even-odd, DT/T=(even-odd)/odd*100
+                if self.chk_save_ton.isChecked():
+                    self.data_ton.append(self._extract_to_save(even))
+                if self.chk_save_tavg.isChecked():
+                    self.data_tavg.append(self._extract_to_save(img_t))
                 if self.chk_save_dt.isChecked():
                     self.data_dt.append(self._extract_to_save(img_dt))
                 if self.chk_save_dtt.isChecked():
@@ -923,9 +938,10 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
                     zero_mm=self.zero_spin.value(),
                     frames_per_point=self.frames_spin.value(),
                     roi_datacube=np.array(self.roi_datacube) if self.roi_datacube else np.array([]),
-                    data_t=np.array(self.data_t) if self.data_t else np.array([]),
-                    data_dt=np.array(self.data_dt) if self.data_dt else np.array([]),
-                    data_dtt=np.array(self.data_dtt) if self.data_dtt else np.array([]),
+                    Ton=np.array(self.data_ton) if self.data_ton else np.array([]),
+                    Tavg=np.array(self.data_tavg) if self.data_tavg else np.array([]),
+                    DT=np.array(self.data_dt) if self.data_dt else np.array([]),
+                    DT_T=np.array(self.data_dtt) if self.data_dtt else np.array([]),
                     raw_odd=np.array(self.raw_odd) if self.raw_odd else np.array([]),
                     raw_even=np.array(self.raw_even) if self.raw_even else np.array([])
                 )

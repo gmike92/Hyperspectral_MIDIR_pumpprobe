@@ -30,6 +30,8 @@ except ImportError:
     raise ImportError("pyqtgraph required: pip install pyqtgraph pyqt6")
 
 from labview_manager import LabVIEWManager, CMD_IDLE, CMD_MEASURE
+from roi_state import ROIState
+from roi_readout import add_roi_readout
 
 
 # ============================================================================
@@ -43,9 +45,6 @@ DEFAULT_APODIZATION = 0.2
 DEFAULT_WL_START = 8.0       # µm
 DEFAULT_WL_STOP  = 14.0      # µm
 
-# Calibration file path
-DEFAULT_CALIBRATION_FILE = r".\Twins\ASRC calibration\parameters_cal.txt"
-
 
 # ============================================================================
 # Per-Pixel Spectrum Processor
@@ -57,7 +56,7 @@ class HyperspectralProcessor:
     Each pixel gets its own DFT independently.
     """
 
-    def __init__(self, calibration_file=None):
+    def __init__(self):
         from calibration import get_spectral_calibration
 
         # Shared spectral calibration (loaded once at module import).
@@ -218,7 +217,8 @@ class KSpaceWindow(QtWidgets.QWidget):
         super().__init__(parent)
         self.manager = manager
         self.stage = twins_stage
-        self.live_window = live_window
+        self.live_window = live_window  # kept for back-compat (ROI now via ROIState)
+        self.roi_state = ROIState()     # shared ROI defined in Live View, read here
         self.processor = HyperspectralProcessor()
 
         # Scan state
@@ -262,6 +262,9 @@ class KSpaceWindow(QtWidgets.QWidget):
         )
         title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         ctrl_layout.addWidget(title)
+
+        # Shared-ROI readout (verify it matches across all windows)
+        add_roi_readout(self, ctrl_layout)
 
         # ====== Stage Position ======
         stage_group = QtWidgets.QGroupBox("Gemini Stage")
@@ -345,8 +348,8 @@ class KSpaceWindow(QtWidgets.QWidget):
         # Plot Mode
         acq_gl.addWidget(QtWidgets.QLabel("Plot Mode:"), 2, 0)
         self.cmb_plot_mode = QtWidgets.QComboBox()
-        self.cmb_plot_mode.addItems(["DeltaT (dT/T) (%)", "Transmission (T)", "DeltaT (dT)"])
-        self.cmb_plot_mode.setCurrentIndex(1) # Default Transmission (T)
+        self.cmb_plot_mode.addItems(["DT", "DT/T", "Ton", "Tavg"])
+        self.cmb_plot_mode.setCurrentIndex(3)  # Default Tavg = (odd+even)/2
         acq_gl.addWidget(self.cmb_plot_mode, 2, 1)
 
         self.btn_bg = QtWidgets.QPushButton("Acquire Background")
@@ -361,16 +364,21 @@ class KSpaceWindow(QtWidgets.QWidget):
         # Data Saving
         save_group = QtWidgets.QGroupBox("Data to Save")
         save_layout = QtWidgets.QVBoxLayout(save_group)
-        self.chk_save_t = QtWidgets.QCheckBox("Transmission (T)")
-        self.chk_save_dt = QtWidgets.QCheckBox("DeltaT (dT)")
-        self.chk_save_dtt = QtWidgets.QCheckBox("DeltaT/T (%)")
+        self.chk_save_dt = QtWidgets.QCheckBox("DT")
+        self.chk_save_dtt = QtWidgets.QCheckBox("DT/T")
+        self.chk_save_ton = QtWidgets.QCheckBox("Ton")
+        self.chk_save_tavg = QtWidgets.QCheckBox("Tavg")
         self.chk_save_raw = QtWidgets.QCheckBox("Raw (Odd/Even)")
-        # Defaults
+        # Default: save all four derived quantities
+        self.chk_save_dt.setChecked(True)
         self.chk_save_dtt.setChecked(True)
-        
-        save_layout.addWidget(self.chk_save_t)
+        self.chk_save_ton.setChecked(True)
+        self.chk_save_tavg.setChecked(True)
+
         save_layout.addWidget(self.chk_save_dt)
         save_layout.addWidget(self.chk_save_dtt)
+        save_layout.addWidget(self.chk_save_ton)
+        save_layout.addWidget(self.chk_save_tavg)
         save_layout.addWidget(self.chk_save_raw)
         
         acq_gl.addWidget(save_group, 6, 0, 1, 2)
@@ -634,8 +642,8 @@ class KSpaceWindow(QtWidgets.QWidget):
             self.lbl_step.setText("-- um")
 
         # ROI info
-        if self.live_window is not None:
-            bounds = self.live_window.get_roi_bounds()
+        if self.roi_state is not None:
+            bounds = self.roi_state.get_roi_bounds()
             if bounds:
                 r0, r1, c0, c1 = bounds
                 h, w = r1 - r0, c1 - c0
@@ -667,21 +675,21 @@ class KSpaceWindow(QtWidgets.QWidget):
             # Handle 1D flat?
             return img.copy() # Should be 2D
 
-        if self.live_window:
+        if self.roi_state:
             # Single Pixel
             if mode == 0:
-                r, c = self.live_window.sel_row, self.live_window.sel_col
+                r, c = self.roi_state.sel_row, self.roi_state.sel_col
                 if r is not None and c is not None:
                     h, w = img.shape
                     if 0 <= r < h and 0 <= c < w:
                         val = img[r, c]
                         return np.array([[val]])
                 return np.array([[np.nanmean(img)]])
-            
+
             # ROI modes
             if mode in [1, 2]:
                 if bounds is None:
-                    bounds = self.live_window.get_roi_bounds()
+                    bounds = self.roi_state.get_roi_bounds()
                 if bounds:
                     r0, r1, c0, c1 = bounds
                     h, w = img.shape
@@ -724,7 +732,8 @@ class KSpaceWindow(QtWidgets.QWidget):
         self.roi_shape = None
         
         # Selective Cubes
-        self.cube_t = None
+        self.cube_ton = None
+        self.cube_tavg = None
         self.cube_dt = None
         self.cube_dtt = None
         self.cube_raw_odd = None
@@ -919,9 +928,10 @@ class KSpaceWindow(QtWidgets.QWidget):
 
                 # Compute based on Plot Mode (for Display / Main Datacube)
                 pmode = self.cmb_plot_mode.currentIndex()
-                if pmode == 1:   img = img_t
-                elif pmode == 2: img = img_dt
-                else:            img = img_dtt
+                if pmode == 0:   img = img_dt     # DT
+                elif pmode == 1: img = img_dtt    # DT/T
+                elif pmode == 2: img = even       # Ton
+                else:            img = img_t       # Tavg
                 
                 if img.size == 0:
                     self.scan_index += 1
@@ -930,7 +940,7 @@ class KSpaceWindow(QtWidgets.QWidget):
 
                 # --- Helper to extract ROI slice ---
                 # Cache bounds once per frame to prevent 6x GUI blocking query overhead!
-                active_bounds = self.live_window.get_roi_bounds() if self.live_window else None
+                active_bounds = self.roi_state.get_roi_bounds() if self.roi_state else None
                 
                 def get_roi_slice(image):
                     s = self._extract_to_save(image, bounds=active_bounds)
@@ -949,8 +959,10 @@ class KSpaceWindow(QtWidgets.QWidget):
                     self.lbl_roi_info.setText(f"ROI: {h}x{w} px ({h*w} pixels)")
                     print(f"[KSPACE] Main Datacube allocated: ({n_pos}, {h}, {w})")
                 
-                if self.chk_save_t.isChecked() and self.cube_t is None:
-                    self.cube_t = np.zeros((n_pos, h, w), dtype=np.float64)
+                if self.chk_save_ton.isChecked() and self.cube_ton is None:
+                    self.cube_ton = np.zeros((n_pos, h, w), dtype=np.float64)
+                if self.chk_save_tavg.isChecked() and self.cube_tavg is None:
+                    self.cube_tavg = np.zeros((n_pos, h, w), dtype=np.float64)
                 if self.chk_save_dt.isChecked() and self.cube_dt is None:
                     self.cube_dt = np.zeros((n_pos, h, w), dtype=np.float64)
                 if self.chk_save_dtt.isChecked() and self.cube_dtt is None:
@@ -966,10 +978,14 @@ class KSpaceWindow(QtWidgets.QWidget):
                 
                 self.datacube[self.scan_index, :r_end, :c_end] = roi_slice[:r_end, :c_end]
 
-                if self.cube_t is not None:
-                    # T = pumped transmission (even frames), not (odd+even)/2
+                if self.cube_ton is not None:
+                    # Ton = pump-on transmission (even frames)
                     sl = get_roi_slice(even)
-                    self.cube_t[self.scan_index, :r_end, :c_end] = sl[:r_end, :c_end]
+                    self.cube_ton[self.scan_index, :r_end, :c_end] = sl[:r_end, :c_end]
+                if self.cube_tavg is not None:
+                    # Tavg = (odd + even) / 2
+                    sl = get_roi_slice(img_t)
+                    self.cube_tavg[self.scan_index, :r_end, :c_end] = sl[:r_end, :c_end]
                 if self.cube_dt is not None:
                     sl = get_roi_slice(img_dt)
                     self.cube_dt[self.scan_index, :r_end, :c_end] = sl[:r_end, :c_end]
@@ -1027,9 +1043,10 @@ class KSpaceWindow(QtWidgets.QWidget):
                          positions=self.scan_positions,
                          positions_calibrated=(np.asarray(cal_pos) if cal_pos is not None else np.array([])),
                          datacube=self.datacube,
-                         data_t=self.cube_t if self.cube_t is not None else np.array([]),
-                         data_dt=self.cube_dt if self.cube_dt is not None else np.array([]),
-                         data_dtt=self.cube_dtt if self.cube_dtt is not None else np.array([]),
+                         Ton=self.cube_ton if self.cube_ton is not None else np.array([]),
+                         Tavg=self.cube_tavg if self.cube_tavg is not None else np.array([]),
+                         DT=self.cube_dt if self.cube_dt is not None else np.array([]),
+                         DT_T=self.cube_dtt if self.cube_dtt is not None else np.array([]),
                          raw_odd=self.cube_raw_odd if self.cube_raw_odd is not None else np.array([]),
                          raw_even=self.cube_raw_even if self.cube_raw_even is not None else np.array([]))
                 self.lbl_status.setText(f"Saved: {os.path.basename(self.scan_npz_path)}")
@@ -1191,6 +1208,11 @@ class KSpaceWindow(QtWidgets.QWidget):
                 save_dict['wavelengths'] = self.wavelengths
             if self.spectrum_cube is not None:
                 save_dict['spectrum_cube'] = self.spectrum_cube
+            # Derived quantities (if collected during the scan)
+            if self.cube_ton is not None:  save_dict['Ton'] = self.cube_ton
+            if self.cube_tavg is not None: save_dict['Tavg'] = self.cube_tavg
+            if self.cube_dt is not None:   save_dict['DT'] = self.cube_dt
+            if self.cube_dtt is not None:  save_dict['DT_T'] = self.cube_dtt
             try:
                 np.savez(filepath, **save_dict)
                 self.lbl_status.setText(f"Saved: {Path(filepath).name}")

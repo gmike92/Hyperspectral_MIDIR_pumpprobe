@@ -43,6 +43,8 @@ except ImportError:
         raise ImportError("pyqtgraph required: pip install pyqtgraph pyqt6")
 
 from labview_manager import LabVIEWManager, CMD_IDLE, CMD_GETFRAME
+from roi_state import ROIState
+from roi_readout import add_roi_readout
 
 
 # Max history length for temporal traces
@@ -115,8 +117,8 @@ class LiveViewWindow(QtWidgets.QWidget):
 
         ctrl_layout.addWidget(QtWidgets.QLabel("Mode:"), 0, 4)
         self.mode_combo = QtWidgets.QComboBox()
-        self.mode_combo.addItems(["ΔT/T (dT)", "Transmission (T)", "DeltaT (dT)", "Even (Pump On)"])
-        self.mode_combo.setCurrentIndex(1) # Default to Transmission (T)
+        self.mode_combo.addItems(["DT", "DT/T", "Ton", "Tavg"])
+        self.mode_combo.setCurrentIndex(3)  # Default Tavg = (odd+even)/2
         self.mode_combo.currentIndexChanged.connect(self._change_mode)
         ctrl_layout.addWidget(self.mode_combo, 0, 5)
         
@@ -191,6 +193,9 @@ class LiveViewWindow(QtWidgets.QWidget):
         self.pixel_label.setStyleSheet("color: #888; font-style: italic;")
         info_layout.addWidget(self.pixel_label)
         info_layout.addStretch()
+
+        # Shared-ROI readout (same value shown in every scan window)
+        add_roi_readout(self, info_layout)
         
         # =====================================================================
         # Main Area: Image + Profile Plots
@@ -224,6 +229,10 @@ class LiveViewWindow(QtWidgets.QWidget):
         self.roi.addScaleHandle([1, 1], [0, 0])
         self.roi.addScaleHandle([0, 0], [1, 1])
         self.img_view.addItem(self.roi)
+        # Restore the ROI geometry / selection persisted from a previous session
+        # and keep it saved whenever the user moves or resizes the rectangle.
+        self._restore_roi_state()
+        self.roi.sigRegionChangeFinished.connect(self._save_roi_state)
         
         # Histogram — disable auto-range for speed
         self.hist = pg.HistogramLUTItem()
@@ -392,8 +401,8 @@ class LiveViewWindow(QtWidgets.QWidget):
         splitter.addWidget(right_widget)
         splitter.setSizes([500, 500])
         
-        # Set initial colormap
-        self._change_mode(0)
+        # Set initial colormap to match the default plot mode
+        self._change_mode(self.mode_combo.currentIndex())
         
         # Poll timer
         self.poll_timer = QtCore.QTimer()
@@ -434,6 +443,7 @@ class LiveViewWindow(QtWidgets.QWidget):
             # Update profiles immediately
             self._update_profiles()
             self._enable_auto_range_once()
+            self._save_roi_state()
     
     def _enable_auto_range_once(self):
         """Re-enable autoRange on profile plots for one update, then disable."""
@@ -577,18 +587,18 @@ class LiveViewWindow(QtWidgets.QWidget):
                     debug_bg_mean = np.mean(bg)
             
             # --- COMPUTE IMAGE ---
-            if mode == 0: # dT/T
-                # (Even - Odd) / Odd. Zero out where Odd is low.
+            if mode == 0: # DT = Even - Odd
+                img = even - odd
+
+            elif mode == 1: # DT/T = (Even - Odd) / Odd
+                # Zero out where Odd is low.
                 denom = np.where(np.abs(odd) > 1e-10, odd, 1e-10)
                 img = (even - odd) / denom
-                
-            elif mode == 2: # dT (Reference - Signal approx, or just diff)
-                img = even - odd 
-                
-            elif mode == 3: # Even (Pump On)
+
+            elif mode == 2: # Ton = pump-on transmission (Even)
                 img = even
-                
-            else: # T (mode 1)
+
+            else: # Tavg = (Odd + Even) / 2  (mode 3)
                 img = (odd + even) / 2.0
             
             # Update Status with Debug Info
@@ -612,8 +622,11 @@ class LiveViewWindow(QtWidgets.QWidget):
                 return
             
             self.current_img = img
+            # Retain last frames so a save can write all four quantities (Ton/Tavg/DT/DT_T)
+            self._last_odd = odd
+            self._last_even = even
             self.batch_count += 1
-            
+
             # --- IMAGE UPDATE (every frame) ---
             # First frame: autoLevels so histogram sets good range
             # After that: autoLevels=False (fast, reuses existing levels)
@@ -741,7 +754,7 @@ class LiveViewWindow(QtWidgets.QWidget):
     # =========================================================================
     
     def _change_mode(self, index):
-        if index == 0 or index == 2:  # DT/T or DT: Blue → White → Red
+        if index == 0 or index == 1:  # DT or DT/T: Blue → White → Red
             pos = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
             color = np.array([
                 [0,   0,   180, 255],
@@ -752,7 +765,7 @@ class LiveViewWindow(QtWidgets.QWidget):
             ], dtype=np.ubyte)
             cmap = pg.ColorMap(pos, color)
             self.img_item.setLookupTable(cmap.getLookupTable(0.0, 1.0, 256))
-        else:  # T: Magma
+        else:  # Ton / Tavg: Magma
             try:
                 self.img_item.setLookupTable(pg.colormap.get('magma').getLookupTable())
             except Exception:
@@ -877,20 +890,28 @@ class LiveViewWindow(QtWidgets.QWidget):
                 sample = "sample"
             sample = "".join(x for x in sample if x.isalnum() or x in " -_")
 
-            mode_idx = self.mode_combo.currentIndex()
-            if mode_idx == 0:
-                mode_tag = "dT_T"
-            elif mode_idx == 1:
-                mode_tag = "T"
+            # Save all four derived quantities from the last odd/even frame:
+            #   Ton=even (pump on), Tavg=(odd+even)/2, DT=even-odd, DT/T=(even-odd)/odd*100
+            odd = getattr(self, '_last_odd', None)
+            even = getattr(self, '_last_even', None)
+            if odd is not None and even is not None:
+                ton = even
+                tavg = (odd + even) / 2.0
+                dt = even - odd
+                dtt = np.divide(even - odd, odd, out=np.zeros_like(odd),
+                                where=np.abs(odd) > 1.0) * 100.0
+                filename = f"{sample}_live_{timestamp.strftime('%H%M%S')}.npz"
+                filepath = os.path.join(date_dir, filename)
+                np.savez(filepath, Ton=ton, Tavg=tavg, DT=dt, DT_T=dtt,
+                         raw_odd=odd, raw_even=even)
             else:
-                mode_tag = "dT"
+                # Fallback: no odd/even retained yet — save the displayed image only
+                filename = f"{sample}_live_{timestamp.strftime('%H%M%S')}.npy"
+                filepath = os.path.join(date_dir, filename)
+                np.save(filepath, self.current_img)
 
-            filename = f"{sample}_live_{mode_tag}_{timestamp.strftime('%H%M%S')}.npy"
-            filepath = os.path.join(date_dir, filename)
-
-            np.save(filepath, self.current_img)
             self.status_label.setText(f"Status: Saved {filename}")
-            print(f"[Live] Saved image to {filepath}")
+            print(f"[Live] Saved to {filepath}")
         except Exception as e:
             self.status_label.setText(f"Status: Save failed — {e}")
             print(f"[ERROR] Save failed: {e}")
@@ -907,6 +928,56 @@ class LiveViewWindow(QtWidgets.QWidget):
         else:
             self.roi_toggle.setText("Mode: Pixel")
             self.roi.setVisible(False)
+        self._save_roi_state()
+
+    # =========================================================================
+    # ROI / selection persistence (survives close/reopen + app restart)
+    # =========================================================================
+
+    def _save_roi_state(self, *args):
+        """Push the current ROI geometry / toggle / pixel into the shared store.
+
+        ROIState is the single source of truth read by every scan window, and it
+        persists itself to disk so the selection survives close/reopen + restart.
+        """
+        try:
+            st = self.roi.state
+            ROIState().update_from(
+                pos=[st['pos'].x(), st['pos'].y()],
+                size=[st['size'].x(), st['size'].y()],
+                use_roi=self.roi_toggle.isChecked(),
+                sel_row=self.sel_row,
+                sel_col=self.sel_col,
+            )
+        except Exception as e:
+            print(f"[Live] Could not save ROI state: {e}")
+
+    def _restore_roi_state(self):
+        """Reapply ROI geometry, mode toggle and selected pixel from the shared store."""
+        try:
+            store = ROIState()
+
+            if store.pos and store.size:
+                self.roi.setSize(store.size, finish=False)
+                self.roi.setPos(store.pos, finish=False)
+
+            # Restore ROI / Pixel toggle (setChecked does not emit clicked,
+            # so sync the label + ROI visibility explicitly).
+            use_roi = store.use_roi
+            self.roi_toggle.setChecked(use_roi)
+            self.roi_toggle.setText("Mode: ROI" if use_roi else "Mode: Pixel")
+            self.roi.setVisible(use_roi)
+
+            # Restore selected pixel + crosshair
+            sr, sc = store.sel_row, store.sel_col
+            if sr is not None and sc is not None:
+                self.sel_row, self.sel_col = sr, sc
+                self.h_line.setValue(sr)
+                self.v_line.setValue(sc)
+                self.h_line.setVisible(True)
+                self.v_line.setVisible(True)
+        except Exception as e:
+            print(f"[Live] Could not restore ROI state: {e}")
     
     @property
     def use_roi(self) -> bool:
@@ -977,6 +1048,8 @@ class LiveViewWindow(QtWidgets.QWidget):
     def closeEvent(self, event):
         if self.acquiring:
             self.stop_live()
+        # Persist ROI geometry / selection so the next open restores it exactly.
+        self._save_roi_state()
         if hasattr(self, 'stage_timer'):
              self.stage_timer.stop()
         event.accept()

@@ -102,8 +102,8 @@ class DeltaTWindow(QtWidgets.QWidget):
         mode_group = QtWidgets.QGroupBox("Display Mode")
         mode_layout = QtWidgets.QVBoxLayout(mode_group)
         self.mode_combo = QtWidgets.QComboBox()
-        self.mode_combo.addItems(["DeltaT (dT/T) (%)", "Transmission (T)", "DeltaT (dT)"])
-        self.mode_combo.setCurrentIndex(1) # Default to Transmission (T)
+        self.mode_combo.addItems(["DT", "DT/T", "Ton", "Tavg"])
+        self.mode_combo.setCurrentIndex(3)  # Default Tavg = (odd+even)/2
         mode_layout.addWidget(self.mode_combo)
         left_layout.addWidget(mode_group)
 
@@ -472,9 +472,9 @@ class DeltaTWindow(QtWidgets.QWidget):
             
             # Handle Background Acquisition (Before subtraction)
             if self._awaiting_background:
-                if mode == 0: # DeltaT: use Odd as background (approx)
+                if mode in (0, 1): # DT / DT/T: use Odd as background (approx)
                     bg_frame = odd.copy()
-                else: # T: use Average of Odd/Even
+                else: # Ton / Tavg: use Average of Odd/Even
                     bg_frame = (odd + even) / 2.0
                 
                 self.manager.background = bg_frame
@@ -492,14 +492,14 @@ class DeltaTWindow(QtWidgets.QWidget):
                 debug_bg_mean = np.mean(bg)
                 
             # Compute Image based on mode
-            if mode == 0:  # DeltaT (dT/T)
-                # (Even - Odd) / Odd. Zero out where Odd is low (background).
-                img = np.divide(even - odd, odd, out=np.zeros_like(odd), where=np.abs(odd) > 1.0) * 100.0
-            elif mode == 2: # DeltaT (dT)
-                # Even - Odd
+            if mode == 0:  # DT = Even - Odd
                 img = even - odd
-            else:  # T
-                # (Odd + Even) / 2
+            elif mode == 1:  # DT/T (%) = (Even - Odd) / Odd
+                # Zero out where Odd is low (background).
+                img = np.divide(even - odd, odd, out=np.zeros_like(odd), where=np.abs(odd) > 1.0) * 100.0
+            elif mode == 2:  # Ton = pump-on transmission (Even)
+                img = even
+            else:  # Tavg = (Odd + Even) / 2
                 img = (odd + even) / 2.0
             
             # Update Status with Debug Info
@@ -520,6 +520,9 @@ class DeltaTWindow(QtWidgets.QWidget):
                 return
 
             self.current_img = img
+            # Retain last frames so a save can write all four quantities (Ton/Tavg/DT/DT_T)
+            self._last_odd = odd
+            self._last_even = even
             self.batch_count += 1
 
             # Image update
@@ -636,8 +639,6 @@ class DeltaTWindow(QtWidgets.QWidget):
                 sample = "sample"
             sample = "".join(x for x in sample if x.isalnum() or x in " -_")
 
-            mode_tag = "dT" if self.mode_combo.currentIndex() == 0 else "T"
-
             pos_tag = ""
             if self.delay_stage and self.delay_stage.is_connected:
                 try:
@@ -646,12 +647,28 @@ class DeltaTWindow(QtWidgets.QWidget):
                 except Exception:
                     pass
 
-            filename = f"{sample}_deltat_{mode_tag}{pos_tag}_{timestamp.strftime('%H%M%S')}.npy"
-            filepath = os.path.join(date_dir, filename)
+            # Save all four derived quantities from the last odd/even frame:
+            #   Ton=even (pump on), Tavg=(odd+even)/2, DT=even-odd, DT/T=(even-odd)/odd*100
+            odd = getattr(self, '_last_odd', None)
+            even = getattr(self, '_last_even', None)
+            if odd is not None and even is not None:
+                ton = even
+                tavg = (odd + even) / 2.0
+                dt = even - odd
+                dtt = np.divide(even - odd, odd, out=np.zeros_like(odd),
+                                where=np.abs(odd) > 1.0) * 100.0
+                filename = f"{sample}_deltat{pos_tag}_{timestamp.strftime('%H%M%S')}.npz"
+                filepath = os.path.join(date_dir, filename)
+                np.savez(filepath, Ton=ton, Tavg=tavg, DT=dt, DT_T=dtt,
+                         raw_odd=odd, raw_even=even)
+            else:
+                # Fallback: no odd/even retained yet — save the displayed image only
+                filename = f"{sample}_deltat{pos_tag}_{timestamp.strftime('%H%M%S')}.npy"
+                filepath = os.path.join(date_dir, filename)
+                np.save(filepath, self.current_img)
 
-            np.save(filepath, self.current_img)
             self.lbl_status.setText(f"Saved: {filename}")
-            print(f"[DeltaT] Saved image to {filepath}")
+            print(f"[DeltaT] Saved to {filepath}")
         except Exception as e:
             self.lbl_status.setText(f"Save failed: {e}")
             print(f"[ERROR] Save failed: {e}")

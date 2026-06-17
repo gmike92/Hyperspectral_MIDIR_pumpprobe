@@ -28,6 +28,8 @@ except ImportError:
     raise ImportError("pyqtgraph required: pip install pyqtgraph pyqt6")
 
 from labview_manager import LabVIEWManager, CMD_IDLE, CMD_MEASURE
+from roi_state import ROIState
+from roi_readout import add_roi_readout
 
 
 # ============================================================================
@@ -80,7 +82,7 @@ class SpectrumProcessor:
     Includes Phase Correction support for Pump-Probe scans.
     """
 
-    def __init__(self, calibration_file=None):
+    def __init__(self):
         from calibration import get_spectral_calibration
 
         self.interferogram = None
@@ -294,7 +296,8 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         self.manager = manager
         self.stage_gemini = twins_stage
         self.stage_delay = delay_stage
-        self.live_window = live_window  # for ROI / pixel signal extraction
+        self.live_window = live_window  # kept for back-compat (ROI now via ROIState)
+        self.roi_state = ROIState()     # shared ROI defined in Live View, read here
         self.processor = SpectrumProcessor()
 
         # Scan state
@@ -306,6 +309,8 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         self.time_points = np.array([])
         self.gemini_positions = np.array([])
         self.hyperspectral_map = None
+        self.hyperspectral_maps = {}    # per-quantity maps: key -> 2D array (Time x WL)
+        self.current_ifgs = {}          # per-quantity scalar interferograms (current time point)
         self.wavelengths = None
         self.reference_wavelengths = None
         self.current_interferogram = None
@@ -339,6 +344,9 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
 
         # Title / Status
         sidebar_layout.addWidget(QtWidgets.QLabel("<b>Control Panel</b>"))
+
+        # Shared-ROI readout (verify it matches across all windows)
+        add_roi_readout(self, sidebar_layout)
 
         # Tabs
         tabs = QtWidgets.QTabWidget()
@@ -477,8 +485,8 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         h2 = QtWidgets.QHBoxLayout()
         h2.addWidget(QtWidgets.QLabel("Plot:"))
         self.cmb_plot_mode = QtWidgets.QComboBox()
-        self.cmb_plot_mode.addItems(["DeltaT (dT/T)", "Transmission (T)", "DeltaT (dT)"])
-        self.cmb_plot_mode.setCurrentIndex(1)
+        self.cmb_plot_mode.addItems(["DT", "DT/T", "Ton", "Tavg"])
+        self.cmb_plot_mode.setCurrentIndex(3)  # Default Tavg = (odd+even)/2
         h2.addWidget(self.cmb_plot_mode)
         sp_l.addLayout(h2)
         
@@ -496,13 +504,19 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         # Data to Save
         save_group = QtWidgets.QGroupBox("Data Selection")
         sl = QtWidgets.QVBoxLayout(save_group)
-        self.chk_save_t = QtWidgets.QCheckBox("Trans (T)")
-        self.chk_save_dt = QtWidgets.QCheckBox("DeltaT (dT)")
-        self.chk_save_dtt = QtWidgets.QCheckBox("DeltaT/T (%)")
+        self.chk_save_dt = QtWidgets.QCheckBox("DT")
+        self.chk_save_dtt = QtWidgets.QCheckBox("DT/T")
+        self.chk_save_ton = QtWidgets.QCheckBox("Ton")
+        self.chk_save_tavg = QtWidgets.QCheckBox("Tavg")
         self.chk_save_raw = QtWidgets.QCheckBox("Raw (Odd/Even)")
+        # Default: save all four derived quantities
+        self.chk_save_dt.setChecked(True)
         self.chk_save_dtt.setChecked(True)
-        sl.addWidget(self.chk_save_t); sl.addWidget(self.chk_save_dt)
-        sl.addWidget(self.chk_save_dtt); sl.addWidget(self.chk_save_raw)
+        self.chk_save_ton.setChecked(True)
+        self.chk_save_tavg.setChecked(True)
+        sl.addWidget(self.chk_save_dt); sl.addWidget(self.chk_save_dtt)
+        sl.addWidget(self.chk_save_ton); sl.addWidget(self.chk_save_tavg)
+        sl.addWidget(self.chk_save_raw)
         settings_layout.addWidget(save_group)
         
         settings_layout.addStretch()
@@ -797,21 +811,21 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
     
     def _extract(self, img):
         """Extract scalar signal for PLOTTING based on save mode."""
-        mode = self.cmb_save_mode.currentIndex() 
+        mode = self.cmb_save_mode.currentIndex()
         # 0=Single, 1=ROI Avg, 2=ROI(2D), 3=Full(2D)
-        
-        if self.live_window:
+
+        if self.roi_state:
             # Single Pixel
             if mode == 0:
-                r, c = self.live_window.sel_row, self.live_window.sel_col
+                r, c = self.roi_state.sel_row, self.roi_state.sel_col
                 if r is not None and c is not None:
                     h, w = img.shape
                     if 0 <= r < h and 0 <= c < w:
                         return float(img[r, c])
-            
+
             # ROI modes (Avg or 2D) -> Plot Mean of ROI
             if mode in [1, 2]:
-                bounds = self.live_window.get_roi_bounds()
+                bounds = self.roi_state.get_roi_bounds()
                 if bounds:
                     r0, r1, c0, c1 = bounds
                     h, w = img.shape
@@ -828,27 +842,27 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         
         if mode == 3: # Full Frame
             return img.copy()
-            
-        if self.live_window:
+
+        if self.roi_state:
             # ROI modes
             if mode in [1, 2]:
                 if bounds is None:
-                    bounds = self.live_window.get_roi_bounds()
+                    bounds = self.roi_state.get_roi_bounds()
                 if bounds:
                     r0, r1, c0, c1 = bounds
                     h, w = img.shape
                     r0, r1 = max(0, min(r0, h)), max(1, min(r1, h))
                     c0, c1 = max(0, min(c0, w)), max(1, min(c1, w))
                     slice_img = img[r0:r1, c0:c1]
-                    
+
                     if mode == 1: # ROI Avg -> Save scalar (or 1x1)
                         return float(np.mean(slice_img))
                     else: # ROI 2D -> Save slice
                         return slice_img.copy()
-            
+
             # Single Pixel
             if mode == 0:
-                r, c = self.live_window.sel_row, self.live_window.sel_col
+                r, c = self.roi_state.sel_row, self.roi_state.sel_col
                 if r is not None and c is not None:
                     h, w = img.shape
                     if 0 <= r < h and 0 <= c < w:
@@ -909,7 +923,8 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         
         # Initialize ROI and data lists for the scan
         self.current_roi_datacube = []
-        self.current_data_t = []
+        self.current_data_ton = []
+        self.current_data_tavg = []
         self.current_data_dt = []
         self.current_data_dtt = []
         self.current_raw_odd = []
@@ -954,6 +969,7 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
 
         n_time = len(self.time_points)
         self.hyperspectral_map = None  # Will be initialized after first spectrum
+        self.hyperspectral_maps = {}   # per-quantity maps (Ton/Tavg/DT/DT_T), built alongside
 
         # Generate Standardized Paths
         timestamp = datetime.now()
@@ -1069,7 +1085,13 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         self.current_interferogram = np.zeros(len(self.gemini_positions))
         self.current_roi_datacube = []
 
-        self.current_data_t = []
+        # Scalar interferograms per quantity (same ROI/pixel extraction as the main
+        # one) so each can be FFT'd into its own hyperspectral map at scan-done.
+        self.current_ifgs = {k: np.zeros(len(self.gemini_positions))
+                             for k in ("Ton", "Tavg", "DT", "DT_T")}
+
+        self.current_data_ton = []
+        self.current_data_tavg = []
         self.current_data_dt = []
         self.current_data_dtt = []
         self.current_raw_odd = []
@@ -1213,21 +1235,33 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
                     img = odd
                 else:
                     pmode = self.cmb_plot_mode.currentIndex()
-                    if pmode == 1:   img = img_t
-                    elif pmode == 2: img = img_dt
-                    else:            img = img_dtt
+                    if pmode == 0:   img = img_dt     # DT
+                    elif pmode == 1: img = img_dtt    # DT/T
+                    elif pmode == 2: img = even       # Ton
+                    else:            img = img_t       # Tavg
                     
                 signal = self._extract(img)
                 self.current_interferogram[self._gemini_index] = signal
 
+                # Per-quantity scalar interferograms — same extraction as `signal`,
+                # one per quantity, so each yields its own hyperspectral map.
+                gi = self._gemini_index
+                if self.current_ifgs and gi < len(self.current_interferogram):
+                    self.current_ifgs["Ton"][gi]  = self._extract(even)
+                    self.current_ifgs["Tavg"][gi] = self._extract(img_t)
+                    self.current_ifgs["DT"][gi]   = self._extract(img_dt)
+                    self.current_ifgs["DT_T"][gi] = self._extract(img_dtt)
+
                 # Legacy ROI datacube
-                active_bounds = self.live_window.get_roi_bounds() if self.live_window else None
+                active_bounds = self.roi_state.get_roi_bounds() if self.roi_state else None
                 
                 self.current_roi_datacube.append(self._extract_to_save(img, bounds=active_bounds))
                 
-                # Selective Save — T = pumped transmission (even frames), not (odd+even)/2
-                if self.chk_save_t.isChecked():
-                    self.current_data_t.append(self._extract_to_save(even, bounds=active_bounds))
+                # Selective Save — Ton=even (pump on), Tavg=(odd+even)/2, DT=even-odd, DT/T=(even-odd)/odd*100
+                if self.chk_save_ton.isChecked():
+                    self.current_data_ton.append(self._extract_to_save(even, bounds=active_bounds))
+                if self.chk_save_tavg.isChecked():
+                    self.current_data_tavg.append(self._extract_to_save(img_t, bounds=active_bounds))
                 if self.chk_save_dt.isChecked():
                     self.current_data_dt.append(self._extract_to_save(img_dt, bounds=active_bounds))
                 if self.chk_save_dtt.isChecked():
@@ -1254,6 +1288,29 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
     # =========================================================================
     #  Post-Interferogram Processing
     # =========================================================================
+
+    def _spectrum_from_ifg(self, interferogram, n_points, w_start, w_stop,
+                           invert_flag, apod_val, sym_flag):
+        """Turn a scalar interferogram into a spectrum via the exact same pipeline
+        used for the displayed map (phase-corrected if a reference phase exists,
+        plus the polarity-inversion option). Returns (wavelengths, spectrum)."""
+        if self.phase_correction is not None and self.pad_length is not None:
+            wl, real, imag = self.processor.compute_phased_spectrum(
+                self.gemini_positions, interferogram,
+                self.phase_correction, pad_length=self.pad_length,
+                wl_start=w_start, wl_stop=w_stop, invert=invert_flag,
+                apod_width=apod_val, symmetrize=sym_flag)
+            spectrum = real  # Absorption Signal
+        else:
+            wl, spectrum = self.processor.compute_spectrum(
+                self.gemini_positions, interferogram, n_points=n_points,
+                wl_start=w_start, wl_stop=w_stop, invert=invert_flag,
+                apod_width=apod_val, symmetrize=sym_flag)
+
+        # Apply Polarity Inversion if requested
+        if hasattr(self, 'chk_invert') and self.chk_invert.isChecked():
+            spectrum = -spectrum
+        return wl, spectrum
 
     def _gemini_scan_done(self):
         """One full interferogram is complete — compute spectrum."""
@@ -1304,24 +1361,11 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
             print("[TWINS-PP] Reference spectrum acquired (Phase stored)")
             return
 
-        # Full scan mode — compute Phase-Corrected ΔT/T
-        if self.phase_correction is not None and self.pad_length is not None:
-             wl, real, imag = self.processor.compute_phased_spectrum(
-                self.gemini_positions, self.current_interferogram, 
-                self.phase_correction, pad_length=self.pad_length,
-                wl_start=w_start, wl_stop=w_stop, invert=invert_flag, apod_width=apod_val, symmetrize=sym_flag
-            )
-             spectrum = real # Absorption Signal
-        else:
-             # Fallback
-             wl, spectrum = self.processor.compute_spectrum(
-                self.gemini_positions, self.current_interferogram, n_points=n_points,
-                wl_start=w_start, wl_stop=w_stop, invert=invert_flag, apod_width=apod_val, symmetrize=sym_flag
-            )
-
-        # Apply Polarity Inversion if requested
-        if hasattr(self, 'chk_invert') and self.chk_invert.isChecked():
-            spectrum = -spectrum
+        # Full scan mode — compute Phase-Corrected ΔT/T (same pipeline reused for
+        # every saved quantity, see _spectrum_from_ifg).
+        wl, spectrum = self._spectrum_from_ifg(
+            self.current_interferogram, n_points, w_start, w_stop,
+            invert_flag, apod_val, sym_flag)
 
         delta_t = spectrum
 
@@ -1336,6 +1380,35 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         if self._time_index < self.hyperspectral_map.shape[0]:
             n = min(len(delta_t), self.hyperspectral_map.shape[1])
             self.hyperspectral_map[self._time_index, :n] = delta_t[:n]
+
+        # Build a hyperspectral map for every selected quantity, using the same
+        # FFT/phase pipeline — so all of them are saved ready-to-plot and no
+        # offline re-analysis is needed to recover Ton/Tavg/DT/DT_T.
+        quantity_checks = {
+            "Ton": self.chk_save_ton.isChecked(),
+            "Tavg": self.chk_save_tavg.isChecked(),
+            "DT": self.chk_save_dt.isChecked(),
+            "DT_T": self.chk_save_dtt.isChecked(),
+        }
+        for key, enabled in quantity_checks.items():
+            if not enabled:
+                continue
+            ifg_q = self.current_ifgs.get(key)
+            if ifg_q is None:
+                continue
+            try:
+                _, spec_q = self._spectrum_from_ifg(
+                    ifg_q, n_points, w_start, w_stop, invert_flag, apod_val, sym_flag)
+            except Exception as e:
+                print(f"[TWINS-PP] map for {key} failed: {e}")
+                continue
+            map_q = self.hyperspectral_maps.get(key)
+            if map_q is None:
+                map_q = np.zeros((len(self.time_points), len(spec_q)))
+                self.hyperspectral_maps[key] = map_q
+            if self._time_index < map_q.shape[0]:
+                nq = min(len(spec_q), map_q.shape[1])
+                map_q[self._time_index, :nq] = spec_q[:nq]
 
         # Update Map (X=Time, Y=Wavelength)
         # ImageItem expects (X, Y).
@@ -1415,9 +1488,10 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
                  gemini_positions_calibrated=(np.asarray(cal_pos) if cal_pos is not None else np.array([])),
                  roi_datacube=np.array(self.current_roi_datacube) if self.current_roi_datacube else np.array([]),
                  # Selective
-                 data_t=np.array(self.current_data_t) if hasattr(self,'current_data_t') and self.current_data_t else np.array([]),
-                 data_dt=np.array(self.current_data_dt) if hasattr(self,'current_data_dt') and self.current_data_dt else np.array([]),
-                 data_dtt=np.array(self.current_data_dtt) if hasattr(self,'current_data_dtt') and self.current_data_dtt else np.array([]),
+                 Ton=np.array(self.current_data_ton) if hasattr(self,'current_data_ton') and self.current_data_ton else np.array([]),
+                 Tavg=np.array(self.current_data_tavg) if hasattr(self,'current_data_tavg') and self.current_data_tavg else np.array([]),
+                 DT=np.array(self.current_data_dt) if hasattr(self,'current_data_dt') and self.current_data_dt else np.array([]),
+                 DT_T=np.array(self.current_data_dtt) if hasattr(self,'current_data_dtt') and self.current_data_dtt else np.array([]),
                  raw_odd=np.array(self.current_raw_odd) if hasattr(self,'current_raw_odd') and self.current_raw_odd else np.array([]),
                  raw_even=np.array(self.current_raw_even) if hasattr(self,'current_raw_even') and self.current_raw_even else np.array([]))
         print(f"[SAVE] {os.path.basename(filename)}")
@@ -1426,14 +1500,20 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         if not hasattr(self, '_save_prefix') or self.hyperspectral_map is None:
             return
         try:
+            # One hyperspectral map per saved quantity, e.g. hyperspectral_map_Ton,
+            # _Tavg, _DT, _DT_T (same shape/axes as the displayed map).
+            extra_maps = {f"hyperspectral_map_{k}": m
+                          for k, m in self.hyperspectral_maps.items() if m is not None}
             np.savez(f"{self._save_prefix}_FINAL.npz",
                      time_points_fs=self.time_points[:self._time_index],
                      hyperspectral_map=self.hyperspectral_map,
                      wavelengths=self.wavelengths,
                      reference_wavelengths=self.reference_wavelengths,
                      reference_spectrum=self.reference_spectrum,
-                     zero_mm=self.spin_zero.value())
-            print(f"[SAVE] Final: {self._save_prefix}_FINAL.npz")
+                     zero_mm=self.spin_zero.value(),
+                     **extra_maps)
+            print(f"[SAVE] Final: {self._save_prefix}_FINAL.npz "
+                  f"(maps: {', '.join(['display'] + list(self.hyperspectral_maps.keys()))})")
         except Exception as e:
             print(f"[ERROR] Final save failed: {e}")
 

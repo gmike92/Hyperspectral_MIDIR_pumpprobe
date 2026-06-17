@@ -34,6 +34,9 @@ Screenshot*.png
 *.png
 !docs/*.png
 
+# Runtime UI state (persisted shared ROI / pixel selection)
+live_roi_state.json
+
 # Local notes
 .claude/
 _archive/

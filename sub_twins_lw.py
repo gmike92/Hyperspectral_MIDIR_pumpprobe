@@ -30,6 +30,8 @@ except ImportError:
     raise ImportError("pyqtgraph required: pip install pyqtgraph pyqt6")
 
 from labview_manager import LabVIEWManager, CMD_IDLE, CMD_MEASURE
+from roi_state import ROIState
+from roi_readout import add_roi_readout
 
 
 # ============================================================================
@@ -43,9 +45,6 @@ DEFAULT_APODIZATION = 0.2   # Apodization width
 DEFAULT_WL_START = 8.0      # Spectrum display start (µm)
 DEFAULT_WL_STOP = 14.0      # Spectrum display stop (µm)
 
-# Calibration file path
-DEFAULT_CALIBRATION_FILE = r".\Twins\ASRC calibration\parameters_cal.txt"
-
 
 # ============================================================================
 # Spectrum Processor  (copied from opus camera)
@@ -57,7 +56,7 @@ class SpectrumProcessor:
     Uses calibration file to convert pseudo-frequency to real wavelength.
     """
 
-    def __init__(self, calibration_file=None):
+    def __init__(self):
         from calibration import get_spectral_calibration
 
         self.interferogram = None
@@ -315,7 +314,8 @@ class TwinsWindow(QtWidgets.QWidget):
         super().__init__(parent)
         self.manager = manager
         self.stage = twins_stage
-        self.live_window = live_window  # for ROI / pixel signal extraction
+        self.live_window = live_window  # kept for back-compat (ROI now via ROIState)
+        self.roi_state = ROIState()     # shared ROI defined in Live View, read here
         self.processor = SpectrumProcessor()
 
         # Scan state
@@ -356,6 +356,9 @@ class TwinsWindow(QtWidgets.QWidget):
         )
         title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         control_layout.addWidget(title)
+
+        # Shared-ROI readout (verify it matches across all windows)
+        add_roi_readout(self, control_layout)
 
         # ====== Stage Control ======
         stage_group = QtWidgets.QGroupBox("Stage Control")
@@ -505,8 +508,8 @@ class TwinsWindow(QtWidgets.QWidget):
         
         combo_row.addWidget(QtWidgets.QLabel("Plot:"))
         self.cmb_plot_mode = QtWidgets.QComboBox()
-        self.cmb_plot_mode.addItems(["DeltaT (dT/T)", "Transmission (T)", "DeltaT (dT)"])
-        self.cmb_plot_mode.setCurrentIndex(1) # Default to Transmission (T)
+        self.cmb_plot_mode.addItems(["DT", "DT/T", "Ton", "Tavg"])
+        self.cmb_plot_mode.setCurrentIndex(3)  # Default Tavg = (odd+even)/2
         combo_row.addWidget(self.cmb_plot_mode)
         
         save_mode_layout.addLayout(combo_row)
@@ -556,16 +559,21 @@ class TwinsWindow(QtWidgets.QWidget):
         
         # Row 2: Checkboxes
         check_row = QtWidgets.QHBoxLayout()
-        self.chk_save_t = QtWidgets.QCheckBox("Save T")
-        self.chk_save_dt = QtWidgets.QCheckBox("Save dT")
-        self.chk_save_dtt = QtWidgets.QCheckBox("Save dT/T")
+        self.chk_save_dt = QtWidgets.QCheckBox("Save DT")
+        self.chk_save_dtt = QtWidgets.QCheckBox("Save DT/T")
+        self.chk_save_ton = QtWidgets.QCheckBox("Save Ton")
+        self.chk_save_tavg = QtWidgets.QCheckBox("Save Tavg")
         self.chk_save_raw = QtWidgets.QCheckBox("Save Raw")
-        # Default
+        # Default: save all four derived quantities
+        self.chk_save_dt.setChecked(True)
         self.chk_save_dtt.setChecked(True)
-        
-        check_row.addWidget(self.chk_save_t)
+        self.chk_save_ton.setChecked(True)
+        self.chk_save_tavg.setChecked(True)
+
         check_row.addWidget(self.chk_save_dt)
         check_row.addWidget(self.chk_save_dtt)
+        check_row.addWidget(self.chk_save_ton)
+        check_row.addWidget(self.chk_save_tavg)
         check_row.addWidget(self.chk_save_raw)
         
         save_mode_layout.addLayout(check_row)
@@ -757,21 +765,21 @@ class TwinsWindow(QtWidgets.QWidget):
     
     def _extract(self, img):
         """Extract scalar signal for PLOTTING based on save mode."""
-        mode = self.cmb_save_mode.currentIndex() 
+        mode = self.cmb_save_mode.currentIndex()
         # 0=Single, 1=ROI Avg, 2=ROI(2D), 3=Full(2D)
-        
-        if self.live_window:
+
+        if self.roi_state:
             # Single Pixel
             if mode == 0:
-                r, c = self.live_window.sel_row, self.live_window.sel_col
+                r, c = self.roi_state.sel_row, self.roi_state.sel_col
                 if r is not None and c is not None:
                     h, w = img.shape
                     if 0 <= r < h and 0 <= c < w:
                         return float(img[r, c])
-            
+
             # ROI modes (Avg or 2D) -> Plot Mean of ROI
             if mode in [1, 2]:
-                bounds = self.live_window.get_roi_bounds()
+                bounds = self.roi_state.get_roi_bounds()
                 if bounds:
                     r0, r1, c0, c1 = bounds
                     h, w = img.shape
@@ -788,26 +796,26 @@ class TwinsWindow(QtWidgets.QWidget):
         
         if mode == 3: # Full Frame
             return img.copy()
-            
-        if self.live_window:
+
+        if self.roi_state:
             # ROI modes
             if mode in [1, 2]:
-                bounds = self.live_window.get_roi_bounds()
+                bounds = self.roi_state.get_roi_bounds()
                 if bounds:
                     r0, r1, c0, c1 = bounds
                     h, w = img.shape
                     r0, r1 = max(0, min(r0, h)), max(1, min(r1, h))
                     c0, c1 = max(0, min(c0, w)), max(1, min(c1, w))
                     slice_img = img[r0:r1, c0:c1]
-                    
+
                     if mode == 1: # ROI Avg -> Save scalar (or 1x1)
                         return float(np.mean(slice_img))
                     else: # ROI 2D -> Save slice
                         return slice_img.copy()
-            
+
             # Single Pixel
             if mode == 0:
-                r, c = self.live_window.sel_row, self.live_window.sel_col
+                r, c = self.roi_state.sel_row, self.roi_state.sel_col
                 if r is not None and c is not None:
                     h, w = img.shape
                     if 0 <= r < h and 0 <= c < w:
@@ -835,7 +843,8 @@ class TwinsWindow(QtWidgets.QWidget):
         self.processor.reset_center()
         
         # Selective Lists
-        self.data_t = []
+        self.data_ton = []
+        self.data_tavg = []
         self.data_dt = []
         self.data_dtt = []
         self.raw_odd = []
@@ -1015,9 +1024,10 @@ class TwinsWindow(QtWidgets.QWidget):
                 
                 # Compute based on Plot Mode
                 pmode = self.cmb_plot_mode.currentIndex()
-                if pmode == 1:   img = img_t
-                elif pmode == 2: img = img_dt
-                else:            img = img_dtt
+                if pmode == 0:   img = img_dt     # DT
+                elif pmode == 1: img = img_dtt    # DT/T
+                elif pmode == 2: img = even       # Ton
+                else:            img = img_t       # Tavg
                 
                 # Extract Signal for Plot
                 val = self._extract(img)
@@ -1030,10 +1040,11 @@ class TwinsWindow(QtWidgets.QWidget):
                          self.interferogram[:self.scan_index+1]
                      )
 
-                # Store Selective Data
-                # T = pumped transmission (even frames), not (odd+even)/2
-                if self.chk_save_t.isChecked():
-                    self.data_t.append(self._extract_to_save(even))
+                # Store selected — Ton=even (pump on), Tavg=(odd+even)/2, DT=even-odd, DT/T=(even-odd)/odd*100
+                if self.chk_save_ton.isChecked():
+                    self.data_ton.append(self._extract_to_save(even))
+                if self.chk_save_tavg.isChecked():
+                    self.data_tavg.append(self._extract_to_save(img_t))
                 if self.chk_save_dt.isChecked():
                     self.data_dt.append(self._extract_to_save(img_dt))
                 if self.chk_save_dtt.isChecked():
@@ -1091,9 +1102,10 @@ class TwinsWindow(QtWidgets.QWidget):
                 'spectrum': self.spectrum,
                 'roi_datacube': np.array(self.roi_datacube) if self.roi_datacube else np.array([]),
                 # Selective
-                'data_t': np.array(self.data_t) if hasattr(self,'data_t') and self.data_t else np.array([]),
-                'data_dt': np.array(self.data_dt) if hasattr(self,'data_dt') and self.data_dt else np.array([]),
-                'data_dtt': np.array(self.data_dtt) if hasattr(self,'data_dtt') and self.data_dtt else np.array([]),
+                'Ton': np.array(self.data_ton) if hasattr(self,'data_ton') and self.data_ton else np.array([]),
+                'Tavg': np.array(self.data_tavg) if hasattr(self,'data_tavg') and self.data_tavg else np.array([]),
+                'DT': np.array(self.data_dt) if hasattr(self,'data_dt') and self.data_dt else np.array([]),
+                'DT_T': np.array(self.data_dtt) if hasattr(self,'data_dtt') and self.data_dtt else np.array([]),
                 'raw_odd': np.array(self.raw_odd) if hasattr(self,'raw_odd') and self.raw_odd else np.array([]),
                 'raw_even': np.array(self.raw_even) if hasattr(self,'raw_even') and self.raw_even else np.array([])
             }
