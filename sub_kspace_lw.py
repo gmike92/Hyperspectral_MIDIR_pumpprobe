@@ -32,6 +32,7 @@ except ImportError:
 from labview_manager import LabVIEWManager, CMD_IDLE, CMD_MEASURE
 from roi_state import ROIState
 from roi_readout import add_roi_readout
+from acq_metadata import meta_json
 
 
 # ============================================================================
@@ -1213,6 +1214,20 @@ class KSpaceWindow(QtWidgets.QWidget):
             if self.cube_tavg is not None: save_dict['Tavg'] = self.cube_tavg
             if self.cube_dt is not None:   save_dict['DT'] = self.cube_dt
             if self.cube_dtt is not None:  save_dict['DT_T'] = self.cube_dtt
+            save_dict['meta'] = meta_json(
+                experiment="kspace_hyperspectral",
+                sample=self.txt_sample_name.text().strip(),
+                save_mode=self.cmb_save_mode.currentText(),
+                plot_mode=self.cmb_plot_mode.currentText(),
+                gemini_start_mm=self.spin_start.value(),
+                gemini_stop_mm=self.spin_stop.value(),
+                gemini_steps=self.spin_steps.value(),
+                wl_start_um=self.spin_wl_start.value(),
+                wl_stop_um=self.spin_wl_stop.value(),
+                apodization=self.spin_apod.value(),
+                roi_bounds=self.roi_state.get_roi_bounds(),
+                background=self.manager.background is not None,
+            )
             try:
                 np.savez(filepath, **save_dict)
                 self.lbl_status.setText(f"Saved: {Path(filepath).name}")

@@ -419,3 +419,10 @@ ton_map = d["hyperspectral_map_Ton"]   # (time, wavelength), ready to plot
 - Hyperspectral maps for all selected quantities are computed online through one
   shared pipeline (`_spectrum_from_ifg`), so saved maps need no offline
   re-analysis.
+- **Saved data is self-describing**: every `.npz`/`.npy` carries a `meta` JSON
+  string (`acq_metadata.meta_json`) with the sample, ROI, scan/FFT/ZPD/phase
+  settings, background state, and timestamp. Read it back with
+  `json.loads(str(np.load(path)["meta"]))`.
+- **Tests** for the numeric core live in `tests/test_processing.py` (metadata,
+  ROI bounds, calibration, ZPD detection, phase smoothing, spectrum transform).
+  Run `python tests/test_processing.py` (standalone, no deps) or `pytest -q`.

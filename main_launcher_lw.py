@@ -378,22 +378,27 @@ class MainLauncher(QtWidgets.QWidget):
     
     def _do_connect_delay(self):
         success = False
+        err = None
         try:
             success = self.delay_stage.connect()
         except Exception as e:
-            self._log(f"[WARN] Real connect failed: {e}")
-        
+            err = e
+            self._log(f"[ERROR] Delay connect failed: {e}")
+
         if success:
             self.led_delay.set_color("#FFC107")
             self.home_delay_btn.setEnabled(True)
             self._log("[OK] Delay stage connected")
         else:
-            # Simulated connection for UI testing
-            self.delay_stage.is_connected = True
-            self.delay_stage.is_homed = True
-            self.led_delay.set_color("#2196F3")  # blue = simulated
-            self.home_delay_btn.setEnabled(True)
-            self._log("[SIM] Delay stage — simulated connection (no hardware)")
+            # No hardware — report the error, do NOT fake a connection
+            # (kept consistent with the Twins stage connect behavior).
+            self.delay_stage.is_connected = False
+            self.led_delay.set_color("#f44336")  # red = error
+            self.connect_delay_btn.setEnabled(True)  # allow retry
+            self._log("[FAIL] Delay stage not connected")
+            msg = (f"Could not connect to the delay stage.\n\n{err}" if err
+                   else "Could not connect to the delay stage (no hardware detected).")
+            QtWidgets.QMessageBox.critical(self, "Delay Stage", msg)
     
     def _home_delay(self):
         self._log("Homing delay stage (may take ~60s)...")

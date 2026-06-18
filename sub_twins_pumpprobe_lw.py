@@ -31,6 +31,7 @@ from labview_manager import LabVIEWManager, CMD_IDLE, CMD_MEASURE
 from roi_state import ROIState
 from roi_readout import add_roi_readout
 from save_config import SaveConfig
+from acq_metadata import meta_json
 
 
 # ============================================================================
@@ -1607,6 +1608,34 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
     #  Save
     # =========================================================================
 
+    def _acq_meta(self, **extra):
+        """Acquisition metadata embedded in every saved file so the scan is
+        self-describing (FFT/phase/ZPD settings, ROI, ranges, background)."""
+        return meta_json(
+            experiment="twins_pump_probe",
+            sample=self.txt_sample_name.text().strip(),
+            save_mode=self.cmb_save_mode.currentText(),
+            plot_mode=self.cmb_plot_mode.currentText(),
+            gemini_start_mm=self.spin_gemini_start.value(),
+            gemini_stop_mm=self.spin_gemini_stop.value(),
+            gemini_steps=self.spin_gemini_steps.value(),
+            wl_start_um=self.spin_wl_start.value(),
+            wl_stop_um=self.spin_wl_stop.value(),
+            n_points=self._resolve_n_points(),
+            apodization=self.spin_apod.value(),
+            invert_ifg=self.chk_invert_ifg.isChecked(),
+            symmetrize=self.chk_asymmetric.isChecked(),
+            invert_polarity=self.chk_invert.isChecked(),
+            zpd_mm=self.spin_zpd_expected.value(),
+            zpd_window_mm=self.spin_zpd_window.value(),
+            zero_mm=self.spin_zero.value(),
+            roi_bounds=self.roi_state.get_roi_bounds(),
+            background=self.manager.background is not None,
+            phase_corrected=self.phase_correction is not None,
+            phase_fit_order=PHASE_FIT_ORDER,
+            **extra,
+        )
+
     def _save_time_step(self, idx, delay_fs, wl, spectrum, delta_t):
         if not hasattr(self, '_save_prefix'):
             return
@@ -1627,7 +1656,8 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
                  DT=np.array(self.current_data_dt) if hasattr(self,'current_data_dt') and self.current_data_dt else np.array([]),
                  DT_T=np.array(self.current_data_dtt) if hasattr(self,'current_data_dtt') and self.current_data_dtt else np.array([]),
                  raw_odd=np.array(self.current_raw_odd) if hasattr(self,'current_raw_odd') and self.current_raw_odd else np.array([]),
-                 raw_even=np.array(self.current_raw_even) if hasattr(self,'current_raw_even') and self.current_raw_even else np.array([]))
+                 raw_even=np.array(self.current_raw_even) if hasattr(self,'current_raw_even') and self.current_raw_even else np.array([]),
+                 meta=self._acq_meta(delay_fs=float(delay_fs), step_index=int(idx)))
         print(f"[SAVE] {os.path.basename(filename)}")
 
     def _save_final(self):
@@ -1645,6 +1675,7 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
                      reference_wavelengths=self.reference_wavelengths,
                      reference_spectrum=self.reference_spectrum,
                      zero_mm=self.spin_zero.value(),
+                     meta=self._acq_meta(saved_quantities=list(self.hyperspectral_maps.keys())),
                      **extra_maps)
             print(f"[SAVE] Final: {self._save_prefix}_FINAL.npz "
                   f"(maps: {', '.join(['display'] + list(self.hyperspectral_maps.keys()))})")

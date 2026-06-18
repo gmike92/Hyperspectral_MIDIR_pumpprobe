@@ -30,6 +30,7 @@ except ImportError:
 from labview_manager import LabVIEWManager, CMD_IDLE, CMD_MEASURE
 from roi_state import ROIState
 from roi_readout import add_roi_readout
+from acq_metadata import meta_json
 
 # Physics
 SPEED_OF_LIGHT_MM_FS = 0.000299792458
@@ -943,7 +944,21 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
                     DT=np.array(self.data_dt) if self.data_dt else np.array([]),
                     DT_T=np.array(self.data_dtt) if self.data_dtt else np.array([]),
                     raw_odd=np.array(self.raw_odd) if self.raw_odd else np.array([]),
-                    raw_even=np.array(self.raw_even) if self.raw_even else np.array([])
+                    raw_even=np.array(self.raw_even) if self.raw_even else np.array([]),
+                    meta=meta_json(
+                        experiment="pump_probe",
+                        sample=self.txt_sample_name.text().strip(),
+                        save_mode=self.cmb_save_mode.currentText(),
+                        plot_mode=self.cmb_plot_mode.currentText(),
+                        zero_mm=self.zero_spin.value(),
+                        frames_per_point=self.frames_spin.value(),
+                        probe_on_stage=self.chk_probe.isChecked(),
+                        roi_bounds=self.roi_state.get_roi_bounds(),
+                        background=self.manager.background is not None,
+                        n_points=len(self.scan_delays),
+                        delay_range_fs=[float(np.min(self.scan_delays)),
+                                        float(np.max(self.scan_delays))] if self.scan_delays else None,
+                    ),
                 )
                 self.status_label.setText(
                     f"Status: Scan complete! Saved to {os.path.basename(self.scan_npz_path)}"

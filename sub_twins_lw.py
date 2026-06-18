@@ -32,6 +32,7 @@ except ImportError:
 from labview_manager import LabVIEWManager, CMD_IDLE, CMD_MEASURE
 from roi_state import ROIState
 from save_config import SaveConfig
+from acq_metadata import meta_json
 from roi_readout import add_roi_readout
 
 
@@ -1185,6 +1186,21 @@ class TwinsWindow(QtWidgets.QWidget):
                 'stop_mm': self.spin_stop.value(),
                 'n_steps': self.spin_n_steps.value(),
                 'apodization': self.spin_apod.value(),
+                'meta': meta_json(
+                    experiment="twins_ftir",
+                    sample=self.txt_sample_name.text().strip(),
+                    save_mode=self.cmb_save_mode.currentText(),
+                    plot_mode=self.cmb_plot_mode.currentText(),
+                    start_mm=self.spin_start.value(),
+                    stop_mm=self.spin_stop.value(),
+                    n_steps=self.spin_n_steps.value(),
+                    wl_start_um=self.spin_wl_start.value(),
+                    wl_stop_um=self.spin_wl_stop.value(),
+                    n_points=self.spin_n_points.value(),
+                    apodization=self.spin_apod.value(),
+                    roi_bounds=self.roi_state.get_roi_bounds(),
+                    background=self.manager.background is not None,
+                ),
             }
             np.save(filepath, data, allow_pickle=True)
             self.lbl_status.setText(f"Saved: {Path(filepath).name}")

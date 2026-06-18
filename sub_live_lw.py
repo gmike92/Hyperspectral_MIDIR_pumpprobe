@@ -45,6 +45,7 @@ except ImportError:
 from labview_manager import LabVIEWManager, CMD_IDLE, CMD_GETFRAME
 from roi_state import ROIState
 from roi_readout import add_roi_readout
+from acq_metadata import meta_json
 
 
 # Max history length for temporal traces
@@ -903,7 +904,15 @@ class LiveViewWindow(QtWidgets.QWidget):
                 filename = f"{sample}_live_{timestamp.strftime('%H%M%S')}.npz"
                 filepath = os.path.join(date_dir, filename)
                 np.savez(filepath, Ton=ton, Tavg=tavg, DT=dt, DT_T=dtt,
-                         raw_odd=odd, raw_even=even)
+                         raw_odd=odd, raw_even=even,
+                         meta=meta_json(
+                             experiment="live_view",
+                             sample=sample,
+                             display_mode=self.mode_combo.currentText(),
+                             frames=self.frames_spin.value(),
+                             roi_bounds=ROIState().get_roi_bounds(),
+                             background=self.manager.background is not None,
+                         ))
             else:
                 # Fallback: no odd/even retained yet — save the displayed image only
                 filename = f"{sample}_live_{timestamp.strftime('%H%M%S')}.npy"
