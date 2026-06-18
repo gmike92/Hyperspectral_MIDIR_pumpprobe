@@ -968,8 +968,12 @@ class KSpaceWindow(QtWidgets.QWidget):
                     self.cube_dt = np.zeros((n_pos, h, w), dtype=np.float64)
                 if self.chk_save_dtt.isChecked() and self.cube_dtt is None:
                     self.cube_dtt = np.zeros((n_pos, h, w), dtype=np.float64)
-                if self.chk_save_raw.isChecked() and self.cube_raw_odd is None:
+                # raw_odd is ALWAYS kept internally so per-pixel phase correction
+                # can use the pump-off frames even when raw isn't being saved
+                # (line below writes it unconditionally). raw_even only when saving.
+                if self.cube_raw_odd is None:
                     self.cube_raw_odd = np.zeros((n_pos, h, w), dtype=np.float64)
+                if self.chk_save_raw.isChecked() and self.cube_raw_even is None:
                     self.cube_raw_even = np.zeros((n_pos, h, w), dtype=np.float64)
 
                 # --- Store Data ---
@@ -1039,6 +1043,9 @@ class KSpaceWindow(QtWidgets.QWidget):
             
             os.makedirs(os.path.dirname(self.scan_npz_path), exist_ok=True)
             cal_pos = getattr(self.processor, 'calibrated_positions', None)
+            # raw_odd is always kept internally; only write it to disk if the user
+            # asked to save raw, so unchecking "Raw" still keeps files lean.
+            save_raw = self.chk_save_raw.isChecked()
             try:
                 np.savez(self.scan_npz_path,
                          positions=self.scan_positions,
@@ -1048,8 +1055,8 @@ class KSpaceWindow(QtWidgets.QWidget):
                          Tavg=self.cube_tavg if self.cube_tavg is not None else np.array([]),
                          DT=self.cube_dt if self.cube_dt is not None else np.array([]),
                          DT_T=self.cube_dtt if self.cube_dtt is not None else np.array([]),
-                         raw_odd=self.cube_raw_odd if self.cube_raw_odd is not None else np.array([]),
-                         raw_even=self.cube_raw_even if self.cube_raw_even is not None else np.array([]))
+                         raw_odd=self.cube_raw_odd if (save_raw and self.cube_raw_odd is not None) else np.array([]),
+                         raw_even=self.cube_raw_even if (save_raw and self.cube_raw_even is not None) else np.array([]))
                 self.lbl_status.setText(f"Saved: {os.path.basename(self.scan_npz_path)}")
                 print(f"[KSPACE] Auto-saved raw: {self.scan_npz_path}")
             except Exception as e:
