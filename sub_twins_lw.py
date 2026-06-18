@@ -31,6 +31,7 @@ except ImportError:
 
 from labview_manager import LabVIEWManager, CMD_IDLE, CMD_MEASURE
 from roi_state import ROIState
+from save_config import SaveConfig
 from roi_readout import add_roi_readout
 
 
@@ -852,9 +853,9 @@ class TwinsWindow(QtWidgets.QWidget):
         
         self.scan_index = 0
 
-        # Generate Standardized Paths
+        # Generate Standardized Paths — honor the launcher's Save Directory.
         timestamp = datetime.now()
-        date_dir = timestamp.strftime(r"D:\pumpprobedata\%Y\%m\%d")
+        date_dir = SaveConfig().date_dir(timestamp)
         os.makedirs(date_dir, exist_ok=True)
         
         sample = self.txt_sample_name.text().strip()
