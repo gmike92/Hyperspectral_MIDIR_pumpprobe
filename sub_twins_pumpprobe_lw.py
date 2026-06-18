@@ -44,6 +44,19 @@ DEFAULT_GEMINI_START = 23.8   # mm (ZPD ~24.2)
 DEFAULT_GEMINI_STOP = 24.8    # mm
 DEFAULT_GEMINI_STEPS = 120
 
+# Spectral output sampling ("Auto"). Zero-filling does NOT add resolution (that
+# is fixed by the scan) — it only interpolates the spectrum so the curve looks
+# smooth. Auto n_points = ZEROFILL_FACTOR x gemini steps, clamped to a sane band
+# to keep the dense DFT bounded.
+ZEROFILL_FACTOR = 8
+ZEROFILL_MIN = 512
+ZEROFILL_MAX = 4096
+
+# Centerburst (ZPD) search defaults. The burst sits ~here with small run-to-run
+# drift; detection is the interferogram envelope max within +/- window of this.
+DEFAULT_ZPD_MM = 24.33
+DEFAULT_ZPD_WINDOW_MM = 0.1
+
 
 # ============================================================================
 # Custom Axes
@@ -75,6 +88,12 @@ class TimeAxisItem(pg.AxisItem):
 # Spectrum Processor  (Ported from Twins FTIR)
 # ============================================================================
 
+# Order of the polynomial fitted to the (unwrapped, magnitude-weighted) reference
+# phase. The instrument phase is smooth in frequency, so a low order suppresses
+# the per-bin noise that raw np.angle injects where the reference is weak.
+PHASE_FIT_ORDER = 5
+
+
 class SpectrumProcessor:
     """
     Process interferogram to spectrum using DFT.
@@ -96,6 +115,38 @@ class SpectrumProcessor:
 
         # Stage axis after motor-jitter correction (populated by compute_complex_spectrum).
         self.calibrated_positions = None
+
+        # Optional ZPD search constraints (mm). When set, the centerburst is
+        # located as the envelope max within [zpd_expected +/- zpd_window]; this
+        # absorbs the small run-to-run drift while rejecting spurious maxima.
+        self.zpd_expected = None
+        self.zpd_window = None
+
+    def _find_center(self, signal, positions):
+        """Locate the centerburst (ZPD) index.
+
+        Uses the analytic-signal envelope (sign-agnostic, robust to which fringe
+        is the local peak and to the symmetric/asymmetric scan shape), restricted
+        to a position window around the expected ZPD when one is configured.
+        Falls back to a plain |signal| argmax if SciPy/positions are unavailable.
+        """
+        sig = np.asarray(signal, dtype=float)
+        try:
+            from scipy.signal import hilbert
+            env = np.abs(hilbert(sig))
+        except Exception:
+            env = np.abs(sig)
+
+        zpd = self.zpd_expected
+        win = self.zpd_window
+        if (zpd is not None and win and positions is not None
+                and len(positions) == len(env)):
+            pos = np.asarray(positions, dtype=float)
+            mask = np.abs(pos - zpd) <= win
+            if np.any(mask):
+                # argmax of the envelope, but only inside the window
+                return int(np.argmax(np.where(mask, env, -np.inf)))
+        return int(np.argmax(env))
 
     def moving_average(self, data, window):
         if window < 2:
@@ -186,7 +237,7 @@ class SpectrumProcessor:
         self.calibrated_positions = positions
 
         if getattr(self, 'center_idx', None) is None:
-            self.center_idx = np.argmax(signal)
+            self.center_idx = self._find_center(signal, positions)
 
         c_idx = self.center_idx
 
@@ -235,14 +286,40 @@ class SpectrumProcessor:
         wavelengths = self._freq_to_wavelength(frequencies)
         return wavelengths, complex_spectrum
 
+    def _smooth_phase(self, phase, magnitude, order=PHASE_FIT_ORDER):
+        """Magnitude-weighted low-order polynomial fit of the unwrapped phase.
+
+        The true instrument phase varies smoothly with frequency, so fitting a
+        low-order polynomial (weighted by the reference magnitude, so weak/noisy
+        bins barely count) removes the per-bin noise that a raw np.angle would
+        otherwise inject into every data spectrum and every time point.
+        """
+        n = len(phase)
+        if n < order + 2:
+            return phase
+        x = np.linspace(-1.0, 1.0, n)          # rescale for numerical conditioning
+        w = np.abs(np.asarray(magnitude, dtype=float))
+        if not np.any(w > 0):
+            w = np.ones_like(x)
+        try:
+            coeffs = np.polyfit(x, phase, order, w=w)
+            return np.polyval(coeffs, x)
+        except Exception as e:
+            print(f"[SpectrumProcessor PP] phase fit failed ({e}); using raw phase")
+            return phase
+
     def compute_phase_correction(self, positions, reference, n_points=None, wl_start=8.0, wl_stop=14.0, invert=False, apod_width=0.2, symmetrize=False):
-        """Calculates phase correction from reference interferogram using DFT."""
+        """Calculates phase correction from reference interferogram using DFT.
+
+        The phase is unwrapped and smoothed (magnitude-weighted polynomial fit)
+        before it is returned, rather than used raw per-bin."""
         self.center_idx = None # Reset to force finding the center for the reference
         wl, complex_spectrum = self.compute_complex_spectrum(positions, reference, n_points=n_points, wl_start=wl_start, wl_stop=wl_stop, invert=invert, apod_width=apod_width, symmetrize=symmetrize)
         if complex_spectrum is None:
             return None, None
-        phase_correction = np.angle(complex_spectrum)
-        
+        raw_phase = np.unwrap(np.angle(complex_spectrum))
+        phase_correction = self._smooth_phase(raw_phase, np.abs(complex_spectrum))
+
         # Always return the actual size used, so caller doesn't check against None
         actual_points = len(wl)
         return phase_correction, actual_points
@@ -530,8 +607,12 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         
         pl.addWidget(QtWidgets.QLabel("Pts:"), 0, 0)
         self.spin_n_points = QtWidgets.QSpinBox()
-        self.spin_n_points.setRange(0, 10000); self.spin_n_points.setValue(300)
+        self.spin_n_points.setRange(0, 10000); self.spin_n_points.setValue(0)
         self.spin_n_points.setSpecialValueText("Auto")
+        self.spin_n_points.setToolTip(
+            f"Spectral output points (interpolation only — does not change resolution).\n"
+            f"Auto = {ZEROFILL_FACTOR}x gemini steps, clamped to "
+            f"[{ZEROFILL_MIN}, {ZEROFILL_MAX}], for a smooth curve that scales with the scan.")
         pl.addWidget(self.spin_n_points, 0, 1)
         
         pl.addWidget(QtWidgets.QLabel("Start (um):"), 1, 0)
@@ -550,7 +631,31 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         self.spin_apod.setValue(0.2)
         self.spin_apod.setSingleStep(0.1)
         pl.addWidget(self.spin_apod, 3, 1)
-        
+
+        # Centerburst (ZPD) search: envelope max within [expected +/- window] mm.
+        pl.addWidget(QtWidgets.QLabel("ZPD (mm):"), 4, 0)
+        self.spin_zpd_expected = QtWidgets.QDoubleSpinBox()
+        self.spin_zpd_expected.setRange(0.0, 50.0)
+        self.spin_zpd_expected.setDecimals(3)
+        self.spin_zpd_expected.setSingleStep(0.01)
+        self.spin_zpd_expected.setValue(DEFAULT_ZPD_MM)
+        self.spin_zpd_expected.setToolTip(
+            "Expected centerburst (zero-path) stage position. The burst is found as\n"
+            "the interferogram envelope maximum within +/- Window of this value.")
+        pl.addWidget(self.spin_zpd_expected, 4, 1)
+
+        pl.addWidget(QtWidgets.QLabel("ZPD win (±mm):"), 5, 0)
+        self.spin_zpd_window = QtWidgets.QDoubleSpinBox()
+        self.spin_zpd_window.setRange(0.0, 5.0)
+        self.spin_zpd_window.setDecimals(3)
+        self.spin_zpd_window.setSingleStep(0.01)
+        self.spin_zpd_window.setValue(DEFAULT_ZPD_WINDOW_MM)
+        self.spin_zpd_window.setToolTip(
+            "Half-width of the ZPD search window (mm). Wide enough to always contain\n"
+            "the true burst across runs, narrow enough to reject spurious maxima.\n"
+            "Set to 0 to search the whole scan (plain envelope max).")
+        pl.addWidget(self.spin_zpd_window, 5, 1)
+
         sidebar_layout.addWidget(proc_group)
         
         self.chk_invert_ifg = QtWidgets.QCheckBox("Invert IFG (+45/-45)")
@@ -700,6 +805,8 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
             self.spin_apod.setValue(float(self._settings.value('twins_apod', self.spin_apod.value())))
             self.chk_invert_ifg.setChecked(str(self._settings.value('twins_invert_ifg', self.chk_invert_ifg.isChecked())).lower() == 'true')
             self.chk_asymmetric.setChecked(str(self._settings.value('twins_asymmetric', self.chk_asymmetric.isChecked())).lower() == 'true')
+            self.spin_zpd_expected.setValue(float(self._settings.value('twins_zpd_mm', self.spin_zpd_expected.value())))
+            self.spin_zpd_window.setValue(float(self._settings.value('twins_zpd_window_mm', self.spin_zpd_window.value())))
             self.txt_sample_name.setText(str(self._settings.value('twins_sample_name', self.txt_sample_name.text())))
             self.spin_settle.setValue(int(self._settings.value('twins_settle_ms', self.spin_settle.value())))
         except Exception:
@@ -715,6 +822,8 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
             self._settings.setValue('twins_apod', self.spin_apod.value())
             self._settings.setValue('twins_invert_ifg', self.chk_invert_ifg.isChecked())
             self._settings.setValue('twins_asymmetric', self.chk_asymmetric.isChecked())
+            self._settings.setValue('twins_zpd_mm', self.spin_zpd_expected.value())
+            self._settings.setValue('twins_zpd_window_mm', self.spin_zpd_window.value())
             self._settings.setValue('twins_sample_name', self.txt_sample_name.text())
             self._settings.setValue('twins_settle_ms', self.spin_settle.value())
 
@@ -727,6 +836,8 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         self.spin_apod.valueChanged.connect(save_settings)
         self.chk_invert_ifg.toggled.connect(save_settings)
         self.chk_asymmetric.toggled.connect(save_settings)
+        self.spin_zpd_expected.valueChanged.connect(save_settings)
+        self.spin_zpd_window.valueChanged.connect(save_settings)
         self.txt_sample_name.textChanged.connect(save_settings)
         self.spin_settle.valueChanged.connect(save_settings)
         self.spin_frames.valueChanged.connect(self._update_counts)
@@ -1245,8 +1356,10 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
 
                 # Per-quantity scalar interferograms — same extraction as `signal`,
                 # one per quantity, so each yields its own hyperspectral map.
+                # Skipped during a reference scan (which doesn't build per-quantity
+                # maps and may still hold differently-sized arrays from a prior run).
                 gi = self._gemini_index
-                if self.current_ifgs and gi < len(self.current_interferogram):
+                if (not self._ref_mode) and self.current_ifgs and gi < len(self.current_interferogram):
                     self.current_ifgs["Ton"][gi]  = self._extract(even)
                     self.current_ifgs["Tavg"][gi] = self._extract(img_t)
                     self.current_ifgs["DT"][gi]   = self._extract(img_dt)
@@ -1289,6 +1402,16 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
     #  Post-Interferogram Processing
     # =========================================================================
 
+    def _resolve_n_points(self):
+        """Number of spectral output bins. Manual value (>0) wins; "Auto" (0)
+        oversamples the interferogram by ZEROFILL_FACTOR x gemini steps (clamped),
+        so spectra are smoothly interpolated and scale with the scan length."""
+        manual = self.spin_n_points.value()
+        if manual > 0:
+            return manual
+        n_steps = self.spin_gemini_steps.value()
+        return int(np.clip(ZEROFILL_FACTOR * n_steps, ZEROFILL_MIN, ZEROFILL_MAX))
+
     def _spectrum_from_ifg(self, interferogram, n_points, w_start, w_stop,
                            invert_flag, apod_val, sym_flag):
         """Turn a scalar interferogram into a spectrum via the exact same pipeline
@@ -1314,7 +1437,10 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
 
     def _gemini_scan_done(self):
         """One full interferogram is complete — compute spectrum."""
-        n_points = self.spin_n_points.value() if self.spin_n_points.value() > 0 else None
+        n_points = self._resolve_n_points()
+        # Constrain centerburst detection to the user's expected-ZPD window.
+        self.processor.zpd_expected = self.spin_zpd_expected.value()
+        self.processor.zpd_window = self.spin_zpd_window.value()
         w_start = self.spin_wl_start.value()
         w_stop = self.spin_wl_stop.value()
         apod_val = self.spin_apod.value()
@@ -1390,18 +1516,25 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
             "DT": self.chk_save_dt.isChecked(),
             "DT_T": self.chk_save_dtt.isChecked(),
         }
+        # The displayed map already computed the spectrum for its own quantity;
+        # reuse it instead of running an identical DFT a second time.
+        display_key = {0: "DT", 1: "DT_T", 2: "Ton", 3: "Tavg"}.get(
+            self.cmb_plot_mode.currentIndex())
         for key, enabled in quantity_checks.items():
             if not enabled:
                 continue
-            ifg_q = self.current_ifgs.get(key)
-            if ifg_q is None:
-                continue
-            try:
-                _, spec_q = self._spectrum_from_ifg(
-                    ifg_q, n_points, w_start, w_stop, invert_flag, apod_val, sym_flag)
-            except Exception as e:
-                print(f"[TWINS-PP] map for {key} failed: {e}")
-                continue
+            if key == display_key:
+                spec_q = delta_t  # identical interferogram + pipeline as the display
+            else:
+                ifg_q = self.current_ifgs.get(key)
+                if ifg_q is None:
+                    continue
+                try:
+                    _, spec_q = self._spectrum_from_ifg(
+                        ifg_q, n_points, w_start, w_stop, invert_flag, apod_val, sym_flag)
+                except Exception as e:
+                    print(f"[TWINS-PP] map for {key} failed: {e}")
+                    continue
             map_q = self.hyperspectral_maps.get(key)
             if map_q is None:
                 map_q = np.zeros((len(self.time_points), len(spec_q)))
