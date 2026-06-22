@@ -1234,6 +1234,7 @@ class KSpaceWindow(QtWidgets.QWidget):
                 wl_stop_um=self.spin_wl_stop.value(),
                 apodization=self.spin_apod.value(),
                 roi_bounds=self.roi_state.get_roi_bounds(),
+                roi_shape=self.roi_state.get_roi_shape(),   # (rows, cols) in pixels
                 background=self.manager.background is not None,
                 **calibration_status(),  # position_axis_calibrated / spectral_calibrated
             )

@@ -95,6 +95,11 @@ class ROIState:
         rh = max(1, int(self.size[1]))
         return (y0, y0 + rh, x0, x0 + rw)
 
+    def get_roi_shape(self):
+        """ROI size in pixels as (n_rows, n_cols) = (height, width)."""
+        r0, r1, c0, c1 = self.get_roi_bounds()
+        return (r1 - r0, c1 - c0)
+
     def summary(self):
         """Compact one-line description, shown in every window so the user can
         verify at a glance that the ROI is identical across all sub UIs."""

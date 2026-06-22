@@ -1631,6 +1631,7 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
             zpd_window_mm=self.spin_zpd_window.value(),
             zero_mm=self.spin_zero.value(),
             roi_bounds=self.roi_state.get_roi_bounds(),
+            roi_shape=self.roi_state.get_roi_shape(),   # (rows, cols) in pixels
             background=self.manager.background is not None,
             phase_corrected=self.phase_correction is not None,
             phase_fit_order=PHASE_FIT_ORDER,

@@ -954,6 +954,7 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
                         frames_per_point=self.frames_spin.value(),
                         probe_on_stage=self.chk_probe.isChecked(),
                         roi_bounds=self.roi_state.get_roi_bounds(),
+                        roi_shape=self.roi_state.get_roi_shape(),   # (rows, cols) in pixels
                         background=self.manager.background is not None,
                         n_points=len(self.scan_delays),
                         delay_range_fs=[float(np.min(self.scan_delays)),

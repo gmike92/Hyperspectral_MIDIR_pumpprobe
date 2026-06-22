@@ -911,6 +911,7 @@ class LiveViewWindow(QtWidgets.QWidget):
                              display_mode=self.mode_combo.currentText(),
                              frames=self.frames_spin.value(),
                              roi_bounds=ROIState().get_roi_bounds(),
+                             roi_shape=ROIState().get_roi_shape(),   # (rows, cols) in pixels
                              background=self.manager.background is not None,
                          ))
             else:
