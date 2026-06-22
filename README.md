@@ -302,13 +302,19 @@ if the calibration file is absent.
 
 ### 10.3 Centerburst (ZPD) detection
 ZPD (zero optical-path difference) is the centerburst — it sets the apodization
-center and the linear phase term. Detection (`_find_center`):
+center and the linear phase term ($x_0$ in [§10.4](#104-phase-correction-twins-pumpprobe-autophase)).
+Detection (`_find_center`) takes the maximum of the **analytic-signal envelope**
+$\big|\mathcal H[\tilde I](x)\big|$ (the Hilbert transform magnitude) restricted to
+a window around an expected ZPD $x_c$ of half-width $w$:
 
-- Take the **analytic-signal envelope** (`|hilbert(signal)|`) — sign-agnostic and
-  robust to which fringe is the local peak, and to symmetric/asymmetric scans.
-- Restrict the search to a **window around an expected ZPD**: the burst maximum is
-  taken only within `[ZPD − w, ZPD + w]` mm. This absorbs the small run-to-run
-  drift while rejecting spurious maxima elsewhere in the trace.
+$$x_{\text{ZPD}} = \operatorname*{arg\,max}_{\,|x - x_c|\le w}\;
+   \big|\mathcal H[\tilde I](x)\big|.$$
+
+- The **envelope** is sign-agnostic and robust to which fringe is the local peak,
+  and to symmetric/asymmetric scans (the centerburst is the global envelope max
+  regardless of where it sits in the array).
+- The **window** $[x_c-w,\,x_c+w]$ absorbs the small run-to-run drift while
+  rejecting spurious maxima elsewhere in the trace.
 - Falls back to a plain `|signal|` argmax if SciPy/positions are unavailable.
 
 Editable in the TWINS Pump–Probe **FFT Settings**: **`ZPD (mm)`** (default
@@ -316,19 +322,70 @@ Editable in the TWINS Pump–Probe **FFT Settings**: **`ZPD (mm)`** (default
 scan). Detected on the reference and reused for all data and all quantities.
 
 ### 10.4 Phase correction (TWINS pump–probe "autophase")
-ΔT/T needs a *signed* spectrum, so the dispersive phase is removed using a
-reference:
 
-1. **Reference scan** (the **odd**/pump-off interferogram) → complex spectrum.
-   Its phase `φ(ν)` is **unwrapped and smoothed** with a magnitude-weighted
-   low-order polynomial fit (`PHASE_FIT_ORDER = 5`) — so noisy/weak bins (band
-   edges, absorption dips) don't inject noise into every data spectrum.
-2. **Data scans** are rotated by `exp(−iφ)`; the **real part** is the
-   phase-corrected ΔT/T (the imaginary/dispersive part is discarded).
+**Why phasing is needed.** An interferogram $I(x)$ (signal vs. calibrated stage
+position $x$) is real, so its Fourier transform is Hermitian and carries a
+spectral phase. After baseline removal and apodization, the windowed
+interferogram is
 
-`Invert Polarity` flips the final sign if the reference phase is inverted relative
-to the transient. Transmission-like quantities (`Ton`) are real and need no
-phasing; they are passed through the same pipeline harmlessly.
+$$\tilde I(x_j) = W(x_j)\,\big[I(x_j) - \bar I(x_j)\big],$$
+
+and the complex spectrum is the (non-uniform) discrete Fourier transform that the
+code evaluates directly on the calibrated axis — `compute_complex_spectrum`:
+
+$$S(\nu) = \sum_j \tilde I(x_j)\, e^{-2\pi i\,\nu x_j}\,\Delta x_j
+        = |S(\nu)|\,e^{\,i\phi(\nu)},$$
+
+where the spatial frequencies $\nu$ are mapped to wavelength $\lambda$ by the
+spectral calibration ([§10.1](#101-pipeline-compute_complex_spectrum)) and
+$\Delta x_j$ is the local sample spacing.
+
+For an interferogram that is **perfectly symmetric about ZPD**, $S(\nu)$ is real
+($\phi\equiv 0$). Real measurements are not: two effects tilt $\phi(\nu)$ —
+
+1. **Instrumental dispersion** of the birefringent interferometer → a smooth,
+   slowly varying $\phi(\nu)$.
+2. **A ZPD sampling offset** $x_0$ (the centerburst rarely lands exactly on a
+   sample) → a linear phase ramp $\phi(\nu)\approx 2\pi\nu x_0$.
+
+Taking $|S(\nu)|$ (a power spectrum, `compute_spectrum`) throws away the sign and
+is fine for static FTIR, but pump–probe needs the **signed** $\Delta T/T$. So we
+must rotate each spectral component back onto the real axis.
+
+**Reference-based correction.** The pump-off (odd) interferogram carries the
+*same* instrument dispersion and ZPD offset as the data, so it estimates the
+phase to remove. From the reference complex spectrum $S_{\text{ref}}(\nu)$
+(`compute_phase_correction`):
+
+$$\phi_{\text{ref}}(\nu) = \operatorname{unwrap}\,\arg S_{\text{ref}}(\nu).$$
+
+Because $\arg$ is noisy where $|S_{\text{ref}}|$ is small (band edges, absorption
+dips), the raw per-bin phase is **not** used directly. Instead it is replaced by a
+magnitude-weighted least-squares polynomial fit of degree $p=$ `PHASE_FIT_ORDER`
+($=5$), exploiting that the true instrument phase is smooth in $\nu$:
+
+$$\phi_{\text{corr}} = \arg\min_{\deg P \le p}\;
+   \sum_\nu \big|S_{\text{ref}}(\nu)\big|^{2}\,
+   \big[\phi_{\text{ref}}(\nu) - P(\nu)\big]^{2}.$$
+
+**Applying it.** Each data spectrum is de-rotated and the in-phase part kept
+(`compute_phased_spectrum`):
+
+$$S_{\text{corr}}(\nu) = S_{\text{data}}(\nu)\,e^{-i\,\phi_{\text{corr}}(\nu)},
+  \qquad
+  \Delta T/T(\lambda) = \operatorname{Re}\big\{S_{\text{corr}}(\nu)\big\}.$$
+
+The discarded $\operatorname{Im}\{S_{\text{corr}}\}$ is the residual dispersive
+component. The reference and every data scan share the same ZPD index and the same
+frequency grid (`pad_length`), so $\phi_{\text{corr}}$ aligns bin-for-bin with
+$S_{\text{data}}$.
+
+**Sign and special cases.** `Invert Polarity` applies an overall
+$\Delta T/T \to -\Delta T/T$ if the reference phase is inverted relative to the
+transient. A transmission like $T_\text{on}=$ even is a real, non-negative
+quantity with no meaningful interferometric phase; with a good reference,
+$\operatorname{Re}\{S\,e^{-i\phi_{\text{corr}}}\}\approx |S|$, so passing it
+through the same pipeline is harmless (it is **not** specially phased).
 
 ### 10.5 Spectral points (`n_points`) — smoothness, not resolution
 Zero-filling **interpolates** the spectrum (a smoother curve); it does **not** add
