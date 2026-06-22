@@ -90,6 +90,22 @@ def get_position_calibration():
     return _position_cache
 
 
+def calibration_status():
+    """Whether the calibrations are actually loaded (vs. falling back to an
+    uncalibrated axis). For embedding in saved metadata so a file records that
+    its position axis was motor-jitter corrected.
+
+        position_axis_calibrated : motor-nonlinearity (parameters_int.txt) applied
+        spectral_calibrated      : wavelength mapping (parameters_cal.txt) applied
+    """
+    wl, _ = get_spectral_calibration()
+    pos, _ = get_position_calibration()
+    return {
+        "position_axis_calibrated": pos is not None,
+        "spectral_calibrated": wl is not None,
+    }
+
+
 def get_real_position_axis(reference):
     """Recover the real position axis from a reference interferogram.
 

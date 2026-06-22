@@ -33,6 +33,7 @@ from labview_manager import LabVIEWManager, CMD_IDLE, CMD_MEASURE
 from roi_state import ROIState
 from roi_readout import add_roi_readout
 from acq_metadata import meta_json
+from calibration import calibration_status
 
 
 # ============================================================================
@@ -1234,6 +1235,7 @@ class KSpaceWindow(QtWidgets.QWidget):
                 apodization=self.spin_apod.value(),
                 roi_bounds=self.roi_state.get_roi_bounds(),
                 background=self.manager.background is not None,
+                **calibration_status(),  # position_axis_calibrated / spectral_calibrated
             )
             try:
                 np.savez(filepath, **save_dict)

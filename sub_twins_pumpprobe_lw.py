@@ -32,6 +32,7 @@ from roi_state import ROIState
 from roi_readout import add_roi_readout
 from save_config import SaveConfig
 from acq_metadata import meta_json
+from calibration import calibration_status
 
 
 # ============================================================================
@@ -1633,6 +1634,7 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
             background=self.manager.background is not None,
             phase_corrected=self.phase_correction is not None,
             phase_fit_order=PHASE_FIT_ORDER,
+            **calibration_status(),   # position_axis_calibrated / spectral_calibrated
             **extra,
         )
 
