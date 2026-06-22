@@ -307,7 +307,7 @@ Detection (`_find_center`) takes the maximum of the **analytic-signal envelope**
 $\big|\mathcal H[\tilde I](x)\big|$ (the Hilbert transform magnitude) restricted to
 a window around an expected ZPD $x_c$ of half-width $w$:
 
-$$x_{\text{ZPD}} = \operatorname*{arg\,max}_{\,|x - x_c|\le w}\;
+$$x_{\text{ZPD}} = \underset{|x - x_c|\le w}{\arg\max}\;
    \big|\mathcal H[\tilde I](x)\big|.$$
 
 - The **envelope** is sign-agnostic and robust to which fringe is the local peak,
@@ -357,7 +357,7 @@ must rotate each spectral component back onto the real axis.
 phase to remove. From the reference complex spectrum $S_{\text{ref}}(\nu)$
 (`compute_phase_correction`):
 
-$$\phi_{\text{ref}}(\nu) = \operatorname{unwrap}\,\arg S_{\text{ref}}(\nu).$$
+$$\phi_{\text{ref}}(\nu) = \mathrm{unwrap}\,\arg S_{\text{ref}}(\nu).$$
 
 Because $\arg$ is noisy where $|S_{\text{ref}}|$ is small (band edges, absorption
 dips), the raw per-bin phase is **not** used directly. Instead it is replaced by a
@@ -373,9 +373,9 @@ $$\phi_{\text{corr}} = \arg\min_{\deg P \le p}\;
 
 $$S_{\text{corr}}(\nu) = S_{\text{data}}(\nu)\,e^{-i\,\phi_{\text{corr}}(\nu)},
   \qquad
-  \Delta T/T(\lambda) = \operatorname{Re}\big\{S_{\text{corr}}(\nu)\big\}.$$
+  \Delta T/T(\lambda) = \mathrm{Re}\big\{S_{\text{corr}}(\nu)\big\}.$$
 
-The discarded $\operatorname{Im}\{S_{\text{corr}}\}$ is the residual dispersive
+The discarded $\mathrm{Im}\{S_{\text{corr}}\}$ is the residual dispersive
 component. The reference and every data scan share the same ZPD index and the same
 frequency grid (`pad_length`), so $\phi_{\text{corr}}$ aligns bin-for-bin with
 $S_{\text{data}}$.
@@ -384,7 +384,7 @@ $S_{\text{data}}$.
 $\Delta T/T \to -\Delta T/T$ if the reference phase is inverted relative to the
 transient. A transmission like $T_\text{on}=$ even is a real, non-negative
 quantity with no meaningful interferometric phase; with a good reference,
-$\operatorname{Re}\{S\,e^{-i\phi_{\text{corr}}}\}\approx |S|$, so passing it
+$\mathrm{Re}\{S\,e^{-i\phi_{\text{corr}}}\}\approx |S|$, so passing it
 through the same pipeline is harmless (it is **not** specially phased).
 
 ### 10.5 Spectral points (`n_points`) — smoothness, not resolution
