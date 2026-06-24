@@ -96,6 +96,11 @@ class TimeAxisItem(pg.AxisItem):
 # the per-bin noise that raw np.angle injects where the reference is weak.
 PHASE_FIT_ORDER = 5
 
+# Quantities that get the phase-corrected (signed) spectrum. The transmission-like
+# quantities (Ton, Tavg) are non-negative and use the magnitude/power spectrum
+# instead — phasing a transmission against the differential reference distorts it.
+PHASED_QUANTITIES = ("DT", "DT_T")
+
 
 class SpectrumProcessor:
     """
@@ -1416,26 +1421,31 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         return int(np.clip(ZEROFILL_FACTOR * n_steps, ZEROFILL_MIN, ZEROFILL_MAX))
 
     def _spectrum_from_ifg(self, interferogram, n_points, w_start, w_stop,
-                           invert_flag, apod_val, sym_flag):
-        """Turn a scalar interferogram into a spectrum via the exact same pipeline
-        used for the displayed map (phase-corrected if a reference phase exists,
-        plus the polarity-inversion option). Returns (wavelengths, spectrum)."""
-        if self.phase_correction is not None and self.pad_length is not None:
+                           invert_flag, apod_val, sym_flag, phased=True):
+        """Turn a scalar interferogram into a spectrum. Returns (wavelengths, spectrum).
+
+        phased=True  → phase-corrected real part (signed ΔT / ΔT·T⁻¹): rotates the
+                       complex spectrum by the reference phase and keeps Re{·}.
+        phased=False → magnitude / power spectrum |S(ν)| (transmission quantities
+                       Ton, Tavg). These are real, non-negative quantities; phasing
+                       a transmission against the differential reference distorts it,
+                       so they use the standard FTIR magnitude instead.
+        """
+        if phased and self.phase_correction is not None and self.pad_length is not None:
             wl, real, imag = self.processor.compute_phased_spectrum(
                 self.gemini_positions, interferogram,
                 self.phase_correction, pad_length=self.pad_length,
                 wl_start=w_start, wl_stop=w_stop, invert=invert_flag,
                 apod_width=apod_val, symmetrize=sym_flag)
-            spectrum = real  # Absorption Signal
+            spectrum = real  # Absorption / differential signal
+            # Polarity inversion only makes sense for the signed (phased) spectrum.
+            if hasattr(self, 'chk_invert') and self.chk_invert.isChecked():
+                spectrum = -spectrum
         else:
             wl, spectrum = self.processor.compute_spectrum(
                 self.gemini_positions, interferogram, n_points=n_points,
                 wl_start=w_start, wl_stop=w_stop, invert=invert_flag,
                 apod_width=apod_val, symmetrize=sym_flag)
-
-        # Apply Polarity Inversion if requested
-        if hasattr(self, 'chk_invert') and self.chk_invert.isChecked():
-            spectrum = -spectrum
         return wl, spectrum
 
     def _gemini_scan_done(self):
@@ -1490,11 +1500,15 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
             print("[TWINS-PP] Reference spectrum acquired (Phase stored)")
             return
 
-        # Full scan mode — compute Phase-Corrected ΔT/T (same pipeline reused for
-        # every saved quantity, see _spectrum_from_ifg).
+        # Full scan mode. The displayed quantity is phased only if it is a signed
+        # differential (DT / DT/T); transmission quantities (Ton/Tavg) use the
+        # magnitude spectrum. See _spectrum_from_ifg / PHASED_QUANTITIES.
+        display_key = {0: "DT", 1: "DT_T", 2: "Ton", 3: "Tavg"}.get(
+            self.cmb_plot_mode.currentIndex())
         wl, spectrum = self._spectrum_from_ifg(
             self.current_interferogram, n_points, w_start, w_stop,
-            invert_flag, apod_val, sym_flag)
+            invert_flag, apod_val, sym_flag,
+            phased=display_key in PHASED_QUANTITIES)
 
         delta_t = spectrum
 
@@ -1520,9 +1534,8 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
             "DT_T": self.chk_save_dtt.isChecked(),
         }
         # The displayed map already computed the spectrum for its own quantity;
-        # reuse it instead of running an identical DFT a second time.
-        display_key = {0: "DT", 1: "DT_T", 2: "Ton", 3: "Tavg"}.get(
-            self.cmb_plot_mode.currentIndex())
+        # reuse it instead of running an identical DFT a second time. Each
+        # quantity is phased only if it is a signed differential.
         for key, enabled in quantity_checks.items():
             if not enabled:
                 continue
@@ -1534,7 +1547,8 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
                     continue
                 try:
                     _, spec_q = self._spectrum_from_ifg(
-                        ifg_q, n_points, w_start, w_stop, invert_flag, apod_val, sym_flag)
+                        ifg_q, n_points, w_start, w_stop, invert_flag, apod_val, sym_flag,
+                        phased=key in PHASED_QUANTITIES)
                 except Exception as e:
                     print(f"[TWINS-PP] map for {key} failed: {e}")
                     continue

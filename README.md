@@ -380,12 +380,14 @@ component. The reference and every data scan share the same ZPD index and the sa
 frequency grid (`pad_length`), so $\phi_{\text{corr}}$ aligns bin-for-bin with
 $S_{\text{data}}$.
 
-**Sign and special cases.** `Invert Polarity` applies an overall
-$\Delta T/T \to -\Delta T/T$ if the reference phase is inverted relative to the
-transient. A transmission like $T_\text{on}=$ even is a real, non-negative
-quantity with no meaningful interferometric phase; with a good reference,
-$\mathrm{Re}\{S\,e^{-i\phi_{\text{corr}}}\}\approx |S|$, so passing it
-through the same pipeline is harmless (it is **not** specially phased).
+**Which quantities are phased.** Phase correction is applied **only to the signed
+differential quantities** ($\Delta T$ and $\Delta T/T$), set by
+`PHASED_QUANTITIES`. The transmission-like quantities ($T_\text{on}=$ even,
+$T_\text{avg}$) are real and non-negative, so they use the **magnitude / power
+spectrum** $|S(\nu)|$ (standard FTIR) instead — phasing a transmission against the
+*differential* reference distorts it (in practice the $T_\text{on}$ transform
+comes out wrong). `Invert Polarity` ($\Delta T/T \to -\Delta T/T$) likewise applies
+only to the signed/phased branch — negating a magnitude is meaningless.
 
 ### 10.5 Spectral points (`n_points`) — smoothness, not resolution
 Zero-filling **interpolates** the spectrum (a smoother curve); it does **not** add
