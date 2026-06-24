@@ -299,15 +299,18 @@ class LiveViewWindow(QtWidgets.QWidget):
         self.lbl_stage_pos.setStyleSheet("font-size: 14px; font-weight: bold; color: #2196F3;")
         stage_layout.addWidget(self.lbl_stage_pos)
 
-        # 2. Pump/Probe Toggle (Moved up)
+        # 2. Pump/Probe Toggle (Moved up) — shared via the delay-stage singleton,
+        #    so the choice made here is used by every window.
         pp_layout = QtWidgets.QHBoxLayout()
         self.rb_pump = QtWidgets.QRadioButton("Pump (on Stage)")
         self.rb_probe = QtWidgets.QRadioButton("Probe (on Stage)")
-        self.rb_pump.setChecked(True)
+        _probe = bool(getattr(self.delay_stage, 'probe_on_stage', False)) if self.delay_stage else False
+        self.rb_probe.setChecked(_probe)
+        self.rb_pump.setChecked(not _probe)
         self.rb_pump.setToolTip("Stage moves Pump path")
         self.rb_probe.setToolTip("Stage moves Probe path")
-        self.rb_pump.toggled.connect(self._update_stage_ui)
-        
+        self.rb_pump.toggled.connect(self._on_probe_toggle)
+
         pp_layout.addWidget(self.rb_pump)
         pp_layout.addWidget(self.rb_probe)
         stage_layout.addLayout(pp_layout)
@@ -827,6 +830,13 @@ class LiveViewWindow(QtWidgets.QWidget):
         except Exception as e:
             self.lbl_stage_pos.setText(f"Stage Error: {e}")
             
+    def _on_probe_toggle(self):
+        """Persist the pump/probe choice to the shared delay-stage singleton so
+        every window uses the same configuration, then refresh the readout."""
+        if self.delay_stage:
+            self.delay_stage.probe_on_stage = self.rb_probe.isChecked()
+        self._poll_stage_pos()
+
     def _update_stage_ui(self):
         """Force update of stage UI (e.g. when zero changed)."""
         self._poll_stage_pos()

@@ -364,7 +364,9 @@ class DeltaTWindow(QtWidgets.QWidget):
                 pos_mm = self.delay_stage.get_position()
                 self.lbl_stage_mm.setText(f"{pos_mm:.3f}")
                 zero_val = self.delay_stage.zero_position if hasattr(self.delay_stage, 'zero_position') else 140.0
-                delay_fs = (pos_mm - zero_val) / SPEED_OF_LIGHT_MM_FS * 2.0
+                # Respect the shared pump/probe config (Probe on stage flips the sign).
+                diff = (zero_val - pos_mm) if getattr(self.delay_stage, 'probe_on_stage', False) else (pos_mm - zero_val)
+                delay_fs = diff / SPEED_OF_LIGHT_MM_FS * 2.0
                 self.lbl_stage_fs.setText(f"{delay_fs:.0f}")
                 self.lbl_stage_status.setText("Connected")
                 self.lbl_stage_status.setStyleSheet("color: #4CAF50; font-weight: bold;")

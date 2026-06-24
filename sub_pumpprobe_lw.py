@@ -107,7 +107,10 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
         
         self.chk_probe = QtWidgets.QCheckBox("Probe on Stage")
         self.chk_probe.setToolTip("If checked, stage moves Probe (Delay = Zero - Pos). Else Pump (Delay = Pos - Zero).")
-        self.chk_probe.toggled.connect(self._update_stage_display)
+        # Shared pump/probe config: init from and write to the delay-stage singleton.
+        if self.delay_stage:
+            self.chk_probe.setChecked(bool(getattr(self.delay_stage, 'probe_on_stage', False)))
+        self.chk_probe.toggled.connect(self._on_probe_toggle)
         zero_layout.addWidget(self.chk_probe, 1, 0, 1, 2)
         
         left_layout.addWidget(zero_group)
@@ -207,7 +210,7 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
         acq_layout.addWidget(QtWidgets.QLabel("Plot Mode:"), 4, 0)
         self.cmb_plot_mode = QtWidgets.QComboBox()
         self.cmb_plot_mode.addItems(["DT", "DT/T", "Ton", "Tavg"])
-        self.cmb_plot_mode.setCurrentIndex(3)  # Default Tavg = (odd+even)/2
+        self.cmb_plot_mode.setCurrentIndex(0)  # Default DT for pump-probe
         acq_layout.addWidget(self.cmb_plot_mode, 4, 1)
 
         # Data Saving Group
@@ -529,6 +532,12 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
     # Stage Control (middle panel)
     # =========================================================================
     
+    def _on_probe_toggle(self):
+        """Persist the pump/probe choice to the shared delay-stage singleton, then refresh."""
+        if self.delay_stage:
+            self.delay_stage.probe_on_stage = self.chk_probe.isChecked()
+        self._update_stage_display()
+
     def _update_stage_display(self):
         """Periodic stage position update."""
         if self.delay_stage and self.delay_stage.is_connected:

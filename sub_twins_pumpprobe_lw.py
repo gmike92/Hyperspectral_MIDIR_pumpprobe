@@ -460,6 +460,14 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         zero_layout.addWidget(self.spin_zero)
         self.chk_probe = QtWidgets.QCheckBox("Probe")
         self.chk_probe.setToolTip("If checked, stage moves Probe (Delay = Zero - Pos). Else Pump (Delay = Pos - Zero).")
+        # Shared pump/probe config: init from and write to the delay-stage singleton.
+        if self.stage_delay:
+            self.chk_probe.setChecked(bool(getattr(self.stage_delay, 'probe_on_stage', False)))
+
+        def on_probe_toggled(checked):
+            if self.stage_delay:
+                self.stage_delay.probe_on_stage = checked
+        self.chk_probe.toggled.connect(on_probe_toggled)
         zero_layout.addWidget(self.chk_probe)
         time_layout.addWidget(zero_group)
 
@@ -571,7 +579,7 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         h2.addWidget(QtWidgets.QLabel("Plot:"))
         self.cmb_plot_mode = QtWidgets.QComboBox()
         self.cmb_plot_mode.addItems(["DT", "DT/T", "Ton", "Tavg"])
-        self.cmb_plot_mode.setCurrentIndex(3)  # Default Tavg = (odd+even)/2
+        self.cmb_plot_mode.setCurrentIndex(0)  # Default DT for pump-probe
         h2.addWidget(self.cmb_plot_mode)
         sp_l.addLayout(h2)
         

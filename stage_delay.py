@@ -80,6 +80,11 @@ class DelayStageDriver:
         # Shared Zero Position (Global)
         self.zero_position = 140.0
 
+        # Shared pump/probe configuration (Global). True = stage moves the Probe
+        # path (Delay = Zero - Pos); False = stage moves the Pump (Delay = Pos - Zero).
+        # Set once (e.g. in Live View) and read by every window via this singleton.
+        self.probe_on_stage = False
+
         self._lock = threading.Lock()
         self._initialized = True
         print("[DelayStageDriver] Singleton initialized")
