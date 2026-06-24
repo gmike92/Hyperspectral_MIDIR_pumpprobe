@@ -1418,6 +1418,14 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
     #  Post-Interferogram Processing
     # =========================================================================
 
+    def _sync_probe_from_driver(self):
+        """Reflect the shared pump/probe flag (e.g. changed on the launcher)."""
+        if not self.stage_delay:
+            return
+        self.chk_probe.blockSignals(True)
+        self.chk_probe.setChecked(bool(getattr(self.stage_delay, 'probe_on_stage', False)))
+        self.chk_probe.blockSignals(False)
+
     def _resolve_n_points(self):
         """Number of spectral output bins. Manual value (>0) wins; "Auto" (0)
         oversamples the interferogram by ZEROFILL_FACTOR x gemini steps (clamped),

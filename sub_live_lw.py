@@ -837,6 +837,16 @@ class LiveViewWindow(QtWidgets.QWidget):
             self.delay_stage.probe_on_stage = self.rb_probe.isChecked()
         self._poll_stage_pos()
 
+    def _sync_probe_from_driver(self):
+        """Reflect the shared pump/probe flag (e.g. changed on the launcher)."""
+        if not self.delay_stage:
+            return
+        probe = bool(getattr(self.delay_stage, 'probe_on_stage', False))
+        self.rb_pump.blockSignals(True); self.rb_probe.blockSignals(True)
+        self.rb_probe.setChecked(probe); self.rb_pump.setChecked(not probe)
+        self.rb_pump.blockSignals(False); self.rb_probe.blockSignals(False)
+        self._poll_stage_pos()
+
     def _update_stage_ui(self):
         """Force update of stage UI (e.g. when zero changed)."""
         self._poll_stage_pos()

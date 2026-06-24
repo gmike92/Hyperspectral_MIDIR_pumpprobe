@@ -358,6 +358,10 @@ class DeltaTWindow(QtWidgets.QWidget):
     #  Stage Control
     # =========================================================================
 
+    def _sync_probe_from_driver(self):
+        """Reflect the shared pump/probe flag (the fs readout already reads it)."""
+        self._update_stage_position()
+
     def _update_stage_position(self):
         if self.delay_stage and self.delay_stage.is_connected:
             try:

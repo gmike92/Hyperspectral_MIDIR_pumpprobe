@@ -538,6 +538,15 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
             self.delay_stage.probe_on_stage = self.chk_probe.isChecked()
         self._update_stage_display()
 
+    def _sync_probe_from_driver(self):
+        """Reflect the shared pump/probe flag (e.g. changed on the launcher)."""
+        if not self.delay_stage:
+            return
+        self.chk_probe.blockSignals(True)
+        self.chk_probe.setChecked(bool(getattr(self.delay_stage, 'probe_on_stage', False)))
+        self.chk_probe.blockSignals(False)
+        self._update_stage_display()
+
     def _update_stage_display(self):
         """Periodic stage position update."""
         if self.delay_stage and self.delay_stage.is_connected:

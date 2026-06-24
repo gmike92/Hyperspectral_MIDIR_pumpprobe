@@ -204,7 +204,27 @@ class MainLauncher(QtWidgets.QWidget):
         self.connect_twins_btn.clicked.connect(self._connect_twins)
         self.connect_twins_btn.setEnabled(HAS_TWINS_STAGE)
         stage_layout.addWidget(self.connect_twins_btn, 1, 0)
-        
+
+        # Pump / Probe on stage — global selector, shared with every window via
+        # the delay-stage singleton. Sets the sign of the delay (Pump: Delay =
+        # Pos - Zero; Probe: Delay = Zero - Pos).
+        pp_box = QtWidgets.QWidget()
+        pp_row = QtWidgets.QHBoxLayout(pp_box)
+        pp_row.setContentsMargins(0, 0, 0, 0)
+        pp_row.addWidget(QtWidgets.QLabel("On stage:"))
+        self.rb_pump_stage = QtWidgets.QRadioButton("Pump")
+        self.rb_probe_stage = QtWidgets.QRadioButton("Probe")
+        _probe0 = bool(getattr(self.delay_stage, 'probe_on_stage', False)) if self.delay_stage else False
+        self.rb_probe_stage.setChecked(_probe0)
+        self.rb_pump_stage.setChecked(not _probe0)
+        self.rb_pump_stage.setToolTip("Stage moves the Pump path (Delay = Pos - Zero)")
+        self.rb_probe_stage.setToolTip("Stage moves the Probe path (Delay = Zero - Pos)")
+        self.rb_pump_stage.toggled.connect(self._on_probe_on_stage_changed)
+        pp_row.addWidget(self.rb_pump_stage)
+        pp_row.addWidget(self.rb_probe_stage)
+        pp_row.addStretch()
+        stage_layout.addWidget(pp_box, 1, 1)
+
         # =================================================================
         # Sub-Window Launchers
         # =================================================================
@@ -445,15 +465,41 @@ class MainLauncher(QtWidgets.QWidget):
                    else "Could not connect to the Twins stage (no hardware detected).")
             QtWidgets.QMessageBox.critical(self, "Twins Stage", msg)
     
+    def _on_probe_on_stage_changed(self):
+        """Global pump/probe selector. Write the shared delay-stage flag and push
+        the change to every open sub-window so they all reflect it immediately."""
+        probe = self.rb_probe_stage.isChecked()
+        if self.delay_stage:
+            self.delay_stage.probe_on_stage = probe
+        for w in (self.live_window, self.deltat_window, self.pp_window,
+                  self.twins_pp_window):
+            if w is not None and hasattr(w, '_sync_probe_from_driver'):
+                try:
+                    w._sync_probe_from_driver()
+                except Exception as e:
+                    print(f"[WARN] probe sync failed: {e}")
+        self._log(f"On stage: {'Probe' if probe else 'Pump'}")
+
+    def _refresh_probe_radio(self):
+        """Reflect the shared flag on the launcher selector (e.g. a window toggled it)."""
+        probe = bool(getattr(self.delay_stage, 'probe_on_stage', False)) if self.delay_stage else False
+        self.rb_pump_stage.blockSignals(True)
+        self.rb_probe_stage.blockSignals(True)
+        self.rb_probe_stage.setChecked(probe)
+        self.rb_pump_stage.setChecked(not probe)
+        self.rb_pump_stage.blockSignals(False)
+        self.rb_probe_stage.blockSignals(False)
+
     # =========================================================================
     # Sub-Windows
     # =========================================================================
-    
+
     def _open_live(self):
         from sub_live_lw import LiveViewWindow
         
         if self.live_window is None or not self.live_window.isVisible():
             self.live_window = LiveViewWindow(self.manager, self.delay_stage)
+            self.live_window.rb_pump.toggled.connect(self._refresh_probe_radio)
         self.live_window.show()
         self.live_window.raise_()
         self._log("Opened Live View window")
@@ -465,6 +511,7 @@ class MainLauncher(QtWidgets.QWidget):
             self.pp_window = PumpProbeScanWindow(
                 self.manager, self.delay_stage, live_window=self.live_window
             )
+            self.pp_window.chk_probe.toggled.connect(self._refresh_probe_radio)
         self.pp_window.show()
         self.pp_window.raise_()
         self._log("Opened Pump-Probe Scan window")
@@ -497,6 +544,7 @@ class MainLauncher(QtWidgets.QWidget):
                 self.manager, self.twins_stage, self.delay_stage,
                 live_window=self.live_window
             )
+            self.twins_pp_window.chk_probe.toggled.connect(self._refresh_probe_radio)
         self.twins_pp_window.show()
         self.twins_pp_window.raise_()
         self._log("Opened Twins Pump-Probe window")
