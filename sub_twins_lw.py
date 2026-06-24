@@ -1081,6 +1081,34 @@ class TwinsWindow(QtWidgets.QWidget):
 
         QtCore.QTimer.singleShot(50, self._move_to_next)
 
+    def _acq_meta(self, **extra):
+        """Acquisition metadata embedded in saved files so the scan is
+        self-describing (settings, ROI, what was saved, calibration)."""
+        return meta_json(
+            experiment="twins_ftir",
+            sample=self.txt_sample_name.text().strip(),
+            save_mode=self.cmb_save_mode.currentText(),
+            saved=[n for n, d in (
+                ("Ton", getattr(self, 'data_ton', [])),
+                ("Tavg", getattr(self, 'data_tavg', [])),
+                ("DT", getattr(self, 'data_dt', [])),
+                ("DT_T", getattr(self, 'data_dtt', [])),
+                ("raw_odd_even", getattr(self, 'raw_odd', []))) if len(d) > 0],
+            plot_mode=self.cmb_plot_mode.currentText(),
+            start_mm=self.spin_start.value(),
+            stop_mm=self.spin_stop.value(),
+            n_steps=self.spin_n_steps.value(),
+            wl_start_um=self.spin_wl_start.value(),
+            wl_stop_um=self.spin_wl_stop.value(),
+            n_points=self.spin_n_points.value(),
+            apodization=self.spin_apod.value(),
+            roi_bounds=self.roi_state.get_roi_bounds(),
+            roi_shape=self.roi_state.get_roi_shape(),
+            background=self.manager.background is not None,
+            **calibration_status(),
+            **extra,
+        )
+
     def _scan_complete(self):
         """Scan finished — compute spectrum and save."""
         self.scanning = False
@@ -1110,7 +1138,8 @@ class TwinsWindow(QtWidgets.QWidget):
                 'DT': np.array(self.data_dt) if hasattr(self,'data_dt') and self.data_dt else np.array([]),
                 'DT_T': np.array(self.data_dtt) if hasattr(self,'data_dtt') and self.data_dtt else np.array([]),
                 'raw_odd': np.array(self.raw_odd) if hasattr(self,'raw_odd') and self.raw_odd else np.array([]),
-                'raw_even': np.array(self.raw_even) if hasattr(self,'raw_even') and self.raw_even else np.array([])
+                'raw_even': np.array(self.raw_even) if hasattr(self,'raw_even') and self.raw_even else np.array([]),
+                'meta': self._acq_meta(),
             }
 
             np.savez(npz_path, **save_dict)
@@ -1187,23 +1216,7 @@ class TwinsWindow(QtWidgets.QWidget):
                 'stop_mm': self.spin_stop.value(),
                 'n_steps': self.spin_n_steps.value(),
                 'apodization': self.spin_apod.value(),
-                'meta': meta_json(
-                    experiment="twins_ftir",
-                    sample=self.txt_sample_name.text().strip(),
-                    save_mode=self.cmb_save_mode.currentText(),
-                    plot_mode=self.cmb_plot_mode.currentText(),
-                    start_mm=self.spin_start.value(),
-                    stop_mm=self.spin_stop.value(),
-                    n_steps=self.spin_n_steps.value(),
-                    wl_start_um=self.spin_wl_start.value(),
-                    wl_stop_um=self.spin_wl_stop.value(),
-                    n_points=self.spin_n_points.value(),
-                    apodization=self.spin_apod.value(),
-                    roi_bounds=self.roi_state.get_roi_bounds(),
-                    roi_shape=self.roi_state.get_roi_shape(),   # (rows, cols) in pixels
-                    background=self.manager.background is not None,
-                    **calibration_status(),  # position_axis_calibrated / spectral_calibrated
-                ),
+                'meta': self._acq_meta(),
             }
             np.save(filepath, data, allow_pickle=True)
             self.lbl_status.setText(f"Saved: {Path(filepath).name}")

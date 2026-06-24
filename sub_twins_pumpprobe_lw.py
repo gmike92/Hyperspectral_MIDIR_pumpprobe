@@ -1639,6 +1639,13 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
     #  Save
     # =========================================================================
 
+    def _saved_quantities(self):
+        """Names of the quantities actually written to disk (from the save checkboxes)."""
+        return [name for name, chk in (
+            ("Ton", self.chk_save_ton), ("Tavg", self.chk_save_tavg),
+            ("DT", self.chk_save_dt), ("DT_T", self.chk_save_dtt),
+            ("raw_odd_even", self.chk_save_raw)) if chk.isChecked()]
+
     def _acq_meta(self, **extra):
         """Acquisition metadata embedded in every saved file so the scan is
         self-describing (FFT/phase/ZPD settings, ROI, ranges, background)."""
@@ -1646,6 +1653,7 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
             experiment="twins_pump_probe",
             sample=self.txt_sample_name.text().strip(),
             save_mode=self.cmb_save_mode.currentText(),
+            saved=self._saved_quantities(),   # which quantities are written
             plot_mode=self.cmb_plot_mode.currentText(),
             gemini_start_mm=self.spin_gemini_start.value(),
             gemini_stop_mm=self.spin_gemini_stop.value(),

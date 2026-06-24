@@ -928,6 +928,7 @@ class LiveViewWindow(QtWidgets.QWidget):
                          meta=meta_json(
                              experiment="live_view",
                              sample=sample,
+                             saved=["Ton", "Tavg", "DT", "DT_T", "raw_odd", "raw_even"],
                              display_mode=self.mode_combo.currentText(),
                              frames=self.frames_spin.value(),
                              roi_bounds=ROIState().get_roi_bounds(),

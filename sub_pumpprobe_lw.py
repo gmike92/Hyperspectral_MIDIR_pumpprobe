@@ -967,6 +967,10 @@ class PumpProbeScanWindow(QtWidgets.QWidget):
                         experiment="pump_probe",
                         sample=self.txt_sample_name.text().strip(),
                         save_mode=self.cmb_save_mode.currentText(),
+                        saved=[n for n, c in (
+                            ("Ton", self.chk_save_ton), ("Tavg", self.chk_save_tavg),
+                            ("DT", self.chk_save_dt), ("DT_T", self.chk_save_dtt),
+                            ("raw_odd_even", self.chk_save_raw)) if c.isChecked()],
                         plot_mode=self.cmb_plot_mode.currentText(),
                         zero_mm=self.zero_spin.value(),
                         frames_per_point=self.frames_spin.value(),

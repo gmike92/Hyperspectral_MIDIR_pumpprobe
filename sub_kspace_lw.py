@@ -1226,6 +1226,9 @@ class KSpaceWindow(QtWidgets.QWidget):
                 experiment="kspace_hyperspectral",
                 sample=self.txt_sample_name.text().strip(),
                 save_mode=self.cmb_save_mode.currentText(),
+                saved=[n for n, cube in (
+                    ("Ton", self.cube_ton), ("Tavg", self.cube_tavg),
+                    ("DT", self.cube_dt), ("DT_T", self.cube_dtt)) if cube is not None],
                 plot_mode=self.cmb_plot_mode.currentText(),
                 gemini_start_mm=self.spin_start.value(),
                 gemini_stop_mm=self.spin_stop.value(),
