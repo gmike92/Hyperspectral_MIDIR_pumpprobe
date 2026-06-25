@@ -657,7 +657,11 @@ class TwinsWindow(QtWidgets.QWidget):
         self.plot_interf.setLabel('left', 'Intensity (mean ΔT/T)')
         self.plot_interf.setLabel('bottom', 'Position (mm)')
         self.plot_interf.showGrid(x=True, y=True, alpha=0.3)
-        self.curve_interf = self.plot_interf.plot(pen='y', name="Raw IFG")
+        # Raw IFG with a marker on every acquired point, so the sampling density
+        # per optical fringe (~4-5 points/cycle) is easy to read off the plot.
+        self.curve_interf = self.plot_interf.plot(
+            pen='y', name="Raw IFG",
+            symbol='o', symbolSize=5, symbolBrush='y', symbolPen=None)
         self.curve_sym = self.plot_interf.plot(pen='c', name="Symmetric IFG")
         self.curve_apod = self.plot_interf.plot(pen='r', name="Apodized IFG")
         interf_layout.addWidget(self.plot_interf)
