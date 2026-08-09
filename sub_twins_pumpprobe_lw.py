@@ -387,6 +387,7 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
 
         # Scan state
         self._scanning = False
+        self._paused = False
         self._time_index = 0
         self._gemini_index = 0
 
@@ -702,6 +703,12 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         self.btn_start.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
         self.btn_start.clicked.connect(self._start_scan)
         h_btn.addWidget(self.btn_start)
+
+        self.btn_pause = QtWidgets.QPushButton("⏸ PAUSE")
+        self.btn_pause.setStyleSheet("background-color: #FF9800; color: white; font-weight: bold; padding: 8px;")
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        h_btn.addWidget(self.btn_pause)
 
         self.btn_stop = QtWidgets.QPushButton("⏹ STOP")
         self.btn_stop.setStyleSheet("background-color: #f44336; color: white; font-weight: bold; padding: 8px;")
@@ -1112,10 +1119,13 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
 
         # UI
         self._scanning = True
+        self._paused = False
         self._ref_mode = False
         self._time_index = 0
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
+        self.btn_pause.setText("⏸ PAUSE")
+        self.btn_pause.setEnabled(True)
         self.btn_reference.setEnabled(False)
         self.progress_bar.setValue(0)
         self.lbl_status.setText("Scanning...")
@@ -1125,8 +1135,28 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
         print(f"[TWINS-PP] Starting: {n_time} time × {len(self.gemini_positions)} gemini")
         QtCore.QTimer.singleShot(50, self._time_move_next)
 
+    def _toggle_pause(self):
+        """Pause/resume the scan. The pause takes effect at the next delay-point
+        boundary (the current interferogram finishes first)."""
+        if not self._scanning:
+            return
+        self._paused = not self._paused
+        if self._paused:
+            self.btn_pause.setText("▶ RESUME")
+            self.lbl_status.setText("Paused (finishing current point)…")
+            self.lbl_status.setStyleSheet("color: #FF9800; font-weight: bold;")
+            print("[TWINS-PP] Scan paused by user")
+        else:
+            self.btn_pause.setText("⏸ PAUSE")
+            self.lbl_status.setText("Resuming…")
+            self.lbl_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            print("[TWINS-PP] Scan resumed by user")
+
     def _stop_scan(self):
         self._scanning = False
+        self._paused = False
+        self.btn_pause.setText("⏸ PAUSE")
+        self.btn_pause.setEnabled(False)
         self.lbl_status.setText("Stopped")
         self.lbl_status.setStyleSheet("color: #f44336; font-weight: bold;")
         self.btn_start.setEnabled(True)
@@ -1142,6 +1172,11 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
     def _time_move_next(self):
         """Move delay stage to next time point."""
         if not self._scanning:
+            return
+        # Pause between delay points — a full interferogram/spectrum is always
+        # completed before we hold here, so no partial data is produced.
+        if self._paused:
+            QtCore.QTimer.singleShot(200, self._time_move_next)
             return
         if self._time_index >= len(self.time_points):
             self._scan_complete()
@@ -1623,8 +1658,11 @@ class TwinsPumpProbeWindow(QtWidgets.QWidget):
 
     def _scan_complete(self):
         self._scanning = False
+        self._paused = False
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self.btn_pause.setText("⏸ PAUSE")
+        self.btn_pause.setEnabled(False)
         self.btn_reference.setEnabled(True)
         self.preview_timer.start(500)
         self.progress_bar.setValue(100)
