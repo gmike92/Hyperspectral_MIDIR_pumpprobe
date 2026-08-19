@@ -174,8 +174,9 @@ In the launcher:
 1. **🚀 Start Manager** — connect to (or launch) LabVIEW and run
    `Experiment_manager.vi`. LED → green on success.
 2. **📷 Init Camera** — open the sensor inside the VI (enum `Init`). LED → green.
-3. **Connect stages** — *Connect Delay Stage* (then *Home Delay*), and/or
-   *Connect Twins Stage*, as needed by your experiment.
+3. **Connect stages** — *Connect Delay Stage* and/or *Connect Twins Stage*, as
+   needed by your experiment. *Home Delay* is **optional** — the delay stage can
+   move and scan without homing; use it only if you want an absolute reference.
 4. **Set the save directory** (defaults to `D:\pumpprobedata`).
 5. **Open a measurement window** from *Sub-Windows* ([§9](#9-measurement-windows)).
 

@@ -195,7 +195,8 @@ class MainLauncher(QtWidgets.QWidget):
         self.connect_delay_btn.setEnabled(HAS_DELAY_STAGE)
         stage_layout.addWidget(self.connect_delay_btn, 0, 0)
         
-        self.home_delay_btn = QtWidgets.QPushButton("🏠 Home Delay")
+        self.home_delay_btn = QtWidgets.QPushButton("🏠 Home Delay (optional)")
+        self.home_delay_btn.setToolTip("Optional — the delay stage can move and scan without homing.")
         self.home_delay_btn.clicked.connect(self._home_delay)
         self.home_delay_btn.setEnabled(False)
         stage_layout.addWidget(self.home_delay_btn, 0, 1)
@@ -364,8 +365,8 @@ class MainLauncher(QtWidgets.QWidget):
         if success:
             self.led_cam.set_color("#4CAF50")
             self.live_btn.setEnabled(True)
-            # PP scan needs delay stage too
-            if self.delay_stage and self.delay_stage.is_connected and self.delay_stage.is_homed:
+            # PP scan needs the delay stage connected (homing is optional).
+            if self.delay_stage and self.delay_stage.is_connected:
                 self.pp_btn.setEnabled(True)
             self._log("[OK] Camera initialized")
         else:
@@ -406,9 +407,12 @@ class MainLauncher(QtWidgets.QWidget):
             self._log(f"[ERROR] Delay connect failed: {e}")
 
         if success:
-            self.led_delay.set_color("#FFC107")
+            # Connected = ready to use (homing is optional, not required).
+            self.led_delay.set_color("#4CAF50")
             self.home_delay_btn.setEnabled(True)
-            self._log("[OK] Delay stage connected")
+            if self.manager.camera_initialized:
+                self.pp_btn.setEnabled(True)
+            self._log("[OK] Delay stage connected (homing optional)")
         else:
             # No hardware — report the error, do NOT fake a connection
             # (kept consistent with the Twins stage connect behavior).
@@ -421,19 +425,38 @@ class MainLauncher(QtWidgets.QWidget):
             QtWidgets.QMessageBox.critical(self, "Delay Stage", msg)
     
     def _home_delay(self):
-        self._log("Homing delay stage (may take ~60s)...")
+        if not (self.delay_stage and self.delay_stage.is_connected):
+            return
+        self._log("Homing delay stage (optional; may take ~60s)...")
         self.home_delay_btn.setEnabled(False)
-        QtCore.QTimer.singleShot(100, self._do_home_delay)
-    
-    def _do_home_delay(self):
-        if self.delay_stage.home():
-            self.led_delay.set_color("#4CAF50")  # green = homed
-            if self.manager.camera_initialized:
-                self.pp_btn.setEnabled(True)
+        self.led_delay.set_color("#FFC107")  # amber = homing in progress
+        # Run the (blocking) homing move on a worker thread so the UI stays
+        # responsive; poll for the result and update the LED when it finishes.
+        self._home_result = None
+
+        def _run():
+            try:
+                self._home_result = bool(self.delay_stage.home())
+            except Exception as e:
+                print(f"[ERROR] Homing thread failed: {e}")
+                self._home_result = False
+
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
+        self._home_poll = QtCore.QTimer()
+        self._home_poll.timeout.connect(self._check_home_done)
+        self._home_poll.start(200)
+
+    def _check_home_done(self):
+        if self._home_result is None:
+            return  # still homing
+        self._home_poll.stop()
+        self.home_delay_btn.setEnabled(True)
+        if self._home_result:
+            self.led_delay.set_color("#4CAF50")  # green
             self._log("[OK] Delay stage homed")
         else:
-            self.led_delay.set_color("#FF9800")  # orange = error
-            self.home_delay_btn.setEnabled(True)
+            self.led_delay.set_color("#FF9800")  # orange = homing error
             self._log("[FAIL] Homing failed")
     
     def _connect_twins(self):

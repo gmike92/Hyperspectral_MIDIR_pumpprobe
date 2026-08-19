@@ -298,38 +298,51 @@ class DelayStageDriver:
     
     def home(self, timeout_s: float = 60.0) -> bool:
         """
-        Home the stage. REQUIRED before any movement.
-        
-        Args:
-            timeout_s: Timeout for homing operation
-            
-        Returns:
-            True if homing completed successfully
+        Home the stage. OPTIONAL — movement works without it (see move_to).
+
+        Performs a real homing move using the method appropriate to the connected
+        stage backend (this is a blocking call that returns when homing finishes):
+            apt      (thorlabs_apt.Motor)        -> move_home(blocking=True)
+            kinesis  (pylablib KinesisMotor)     -> home(sync=True)
+            pythonnet(KCube .NET servo)          -> Home(timeout_ms)
+
+        Returns True if homing completed successfully.
         """
         if not self.is_connected:
             print("[ERROR] Stage not connected")
             return False
-        
-        if self.is_homed:
-            print("[INFO] Stage already homed")
-            return True
-        
+
         try:
-            print("[INFO] Starting homing sequence...")
-            
-            if hasattr(self._stage, 'home'):
-                self._stage.home(sync=True, timeout=timeout_s)
+            print("[INFO] Starting homing sequence (stage moving to reference)...")
+
+            if self._stage_type == 'apt':
+                # thorlabs_apt.Motor
+                self._stage.move_home(blocking=True)
+            elif self._stage_type == 'kinesis':
+                # pylablib KinesisMotor
+                self._stage.home(sync=True, force=True, timeout=timeout_s)
             elif hasattr(self._stage, 'Home'):
+                # pythonnet KCube .NET servo (timeout in ms)
                 self._stage.Home(int(timeout_s * 1000))
+            elif hasattr(self._stage, 'move_home'):
+                self._stage.move_home(blocking=True)
+            elif hasattr(self._stage, 'home'):
+                self._stage.home(sync=True, timeout=timeout_s)
             else:
-                print("[WARN] No home method found, assuming already homed")
-            
+                print("[ERROR] Stage exposes no homing method")
+                return False
+
             self.is_homed = True
-            with self._lock:
-                self._position_mm = 0.0
+            # Refresh the cached position from the controller (get_position takes
+            # its own lock and updates self._position_mm).
+            try:
+                self.get_position()
+            except Exception:
+                with self._lock:
+                    self._position_mm = 0.0
             print("[OK] Homing complete")
             return True
-            
+
         except Exception as e:
             print(f"[ERROR] Homing failed: {e}")
             return False
@@ -354,11 +367,8 @@ class DelayStageDriver:
         if not self.is_connected:
             print("[ERROR] Stage not connected")
             return False
-        
-        if not self.is_homed:
-            print("[ERROR] Stage not homed - call home() first!")
-            return False
-        
+
+        # Homing is optional — a connected stage can move without it.
         try:
             print(f"[INFO] Moving to {position_mm:.4f} mm...")
             
@@ -398,11 +408,8 @@ class DelayStageDriver:
         if not self.is_connected:
             print("[ERROR] Stage not connected")
             return False
-        
-        if not self.is_homed:
-            print("[ERROR] Stage not homed - call home() first!")
-            return False
-        
+
+        # Homing is optional — a connected stage can move without it.
         try:
             current = self.get_position()
             target = current + distance_mm
