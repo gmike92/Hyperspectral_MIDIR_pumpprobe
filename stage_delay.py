@@ -70,7 +70,10 @@ class DelayStageDriver:
         # Configuration
         self.double_pass = True  # True = retroreflector (factor of 2)
         
-        # Scaling factor: 20000 counts per mm for Kinesis stages
+        # Encoder scaling for the Thorlabs DDS220 direct-drive stage:
+        # 20000 counts per mm (factory device-unit calibration). Used to convert
+        # mm <-> device units on the Kinesis backend (move_to/move_by/get_position).
+        # If you swap to a different stage, update this to its counts/mm.
         self.COUNTS_PER_MM = 20000
         
         # Default serial number for probe delay line (from lab notes)
