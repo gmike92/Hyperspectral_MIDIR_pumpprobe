@@ -106,19 +106,20 @@ class DelayStageDriver:
         if self.is_connected:
             print("[INFO] Delay stage already connected")
             return True
-        
-        # Try APT first (more reliable for BBD30X Brushless Motor Controller)
-        print("[INFO] Trying APT library first...")
-        if self._connect_apt(serial_number):
-            return True
-        
-        # Fallback to Kinesis
-        print("[INFO] APT failed, trying Kinesis...")
+
+        # Try Kinesis (pylablib) first — homing works via this backend on our
+        # hardware; APT's move_home does not actually home this controller.
+        print("[INFO] Trying Kinesis (pylablib) first...")
         if self._connect_kinesis(serial_number):
             return True
-        
+
+        # Fallback to APT
+        print("[INFO] Kinesis failed, trying APT...")
+        if self._connect_apt(serial_number):
+            return True
+
         # Last resort: pythonnet
-        print("[INFO] Kinesis failed, trying pythonnet...")
+        print("[INFO] APT failed, trying pythonnet...")
         return self._connect_pythonnet(serial_number)
     
     def _connect_kinesis(self, serial_number: str = None) -> bool:
