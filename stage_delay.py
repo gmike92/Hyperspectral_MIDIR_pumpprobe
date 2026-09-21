@@ -319,19 +319,37 @@ class DelayStageDriver:
         try:
             print("[INFO] Starting homing sequence (stage moving to reference)...")
 
-            if self._stage_type == 'apt':
-                # thorlabs_apt.Motor
-                self._stage.move_home(blocking=True)
-            elif self._stage_type == 'kinesis':
-                # pylablib KinesisMotor
-                self._stage.home(sync=True, force=True, timeout=timeout_s)
+            if self._stage_type == 'kinesis':
+                # pylablib KinesisMotor. Start a NON-blocking home, then poll for
+                # completion holding the device lock only briefly each tick — so
+                # concurrent position reads don't interleave request/reply on the
+                # serial link (the cause of "unexpected command received").
+                with self._lock:
+                    self._stage.home(sync=False, force=True)
+                waited = 0.0
+                while waited < timeout_s:
+                    with self._lock:
+                        try:
+                            busy = self._stage.is_homing()
+                        except Exception:
+                            busy = self._stage.is_moving()
+                    if not busy:
+                        break
+                    time.sleep(0.1)
+                    waited += 0.1
+            elif self._stage_type == 'apt':
+                with self._lock:
+                    self._stage.move_home(blocking=True)
             elif hasattr(self._stage, 'Home'):
                 # pythonnet KCube .NET servo (timeout in ms)
-                self._stage.Home(int(timeout_s * 1000))
+                with self._lock:
+                    self._stage.Home(int(timeout_s * 1000))
             elif hasattr(self._stage, 'move_home'):
-                self._stage.move_home(blocking=True)
+                with self._lock:
+                    self._stage.move_home(blocking=True)
             elif hasattr(self._stage, 'home'):
-                self._stage.home(sync=True, timeout=timeout_s)
+                with self._lock:
+                    self._stage.home(sync=True, timeout=timeout_s)
             else:
                 print("[ERROR] Stage exposes no homing method")
                 return False
@@ -375,19 +393,20 @@ class DelayStageDriver:
         # Homing is optional — a connected stage can move without it.
         try:
             print(f"[INFO] Moving to {position_mm:.4f} mm...")
-            
-            if self._stage_type == 'kinesis':
-                self._stage.move_to(position_mm * self.COUNTS_PER_MM)
-            elif self._stage_type == 'apt':
-                self._stage.move_to(float(position_mm), blocking=True)
-            elif hasattr(self._stage, 'MoveTo'):
-                self._stage.MoveTo(self._mm_to_device_units(position_mm),
-                                  int(timeout_s * 1000))
-            else:
-                print("[ERROR] No move method found")
-                return False
-            
+
+            # Serialize device I/O so concurrent position polls / homing on other
+            # threads don't clash with this command on the serial link.
             with self._lock:
+                if self._stage_type == 'kinesis':
+                    self._stage.move_to(position_mm * self.COUNTS_PER_MM)
+                elif self._stage_type == 'apt':
+                    self._stage.move_to(float(position_mm), blocking=True)
+                elif hasattr(self._stage, 'MoveTo'):
+                    self._stage.MoveTo(self._mm_to_device_units(position_mm),
+                                      int(timeout_s * 1000))
+                else:
+                    print("[ERROR] No move method found")
+                    return False
                 self._position_mm = position_mm
             print(f"[OK] Moved to {position_mm:.4f} mm")
             return True
@@ -415,18 +434,19 @@ class DelayStageDriver:
 
         # Homing is optional — a connected stage can move without it.
         try:
-            current = self.get_position()
+            current = self.get_position()  # takes its own lock
             target = current + distance_mm
             print(f"[INFO] Moving relative: {distance_mm:+.4f} mm to {target:.4f} mm")
-            
-            if self._stage_type == 'kinesis':
-                self._stage.move_by(distance_mm * self.COUNTS_PER_MM)
-            elif self._stage_type == 'apt':
-                self._stage.move_by(float(distance_mm), blocking=True)
-            else:
+
+            if self._stage_type not in ('kinesis', 'apt'):
                 return self.move_to(target, wait, timeout_s)
-            
+
+            # Serialize device I/O (see move_to).
             with self._lock:
+                if self._stage_type == 'kinesis':
+                    self._stage.move_by(distance_mm * self.COUNTS_PER_MM)
+                else:  # apt
+                    self._stage.move_by(float(distance_mm), blocking=True)
                 self._position_mm = target
             return True
 
@@ -464,23 +484,23 @@ class DelayStageDriver:
             return self._position_mm
         
         try:
-            if self._stage_type == 'kinesis':
-                pos = self._stage.get_position() * (1.0 / self.COUNTS_PER_MM)
-            elif self._stage_type == 'apt':
-                pos = self._stage.position
-            elif hasattr(self._stage, 'Position'):
-                pos = self._device_units_to_mm(self._stage.Position)
-            else:
-                pos = self._position_mm
-            
+            # Serialize device I/O so a concurrent move/home on another thread
+            # can't interleave request/reply on the serial link.
             with self._lock:
+                if self._stage_type == 'kinesis':
+                    pos = self._stage.get_position() * (1.0 / self.COUNTS_PER_MM)
+                elif self._stage_type == 'apt':
+                    pos = self._stage.position
+                elif hasattr(self._stage, 'Position'):
+                    pos = self._device_units_to_mm(self._stage.Position)
+                else:
+                    pos = self._position_mm
                 self._position_mm = float(pos)
                 return self._position_mm
 
         except Exception as e:
             print(f"[WARN] Could not read position: {e}")
-            with self._lock:
-                return self._position_mm
+            return self._position_mm
     
     def get_position_fs(self) -> float:
         """Get current position as time delay in femtoseconds."""
@@ -490,13 +510,14 @@ class DelayStageDriver:
         """Check if stage is currently moving."""
         if not self.is_connected:
             return False
-        
+
         try:
-            if hasattr(self._stage, 'is_moving'):
-                return self._stage.is_moving()
-            elif hasattr(self._stage, 'IsMoving'):
-                return bool(self._stage.IsMoving)
-            else:
+            # Serialize device I/O (see get_position).
+            with self._lock:
+                if hasattr(self._stage, 'is_moving'):
+                    return self._stage.is_moving()
+                elif hasattr(self._stage, 'IsMoving'):
+                    return bool(self._stage.IsMoving)
                 return False
         except Exception:
             return False
