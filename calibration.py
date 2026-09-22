@@ -67,6 +67,74 @@ def get_spectral_calibration():
     return _spectral_cache
 
 
+# ---------------------------------------------------------------------------
+# Shared spectral transform — used by EVERY TWINS spectrum builder
+# (sub_twins_lw, sub_twins_pumpprobe_lw, sub_kspace_lw) so the frequency grid,
+# the frequency<->wavelength calibration mapping, and the DFT itself are computed
+# in exactly one place, the same way everywhere.
+# ---------------------------------------------------------------------------
+
+def frequency_limits(wl_start, wl_stop):
+    """Stage-reciprocal frequency limits (1/mm) for a wavelength band [wl_start,
+    wl_stop] (µm), mapped through the spectral calibration."""
+    wl_cal, rk_cal = get_spectral_calibration()
+    if wl_cal is not None and rk_cal is not None:
+        from scipy.interpolate import interp1d
+        fn = interp1d(1.0 / wl_cal, rk_cal, kind="linear", fill_value="extrapolate")
+        return float(fn(1.0 / wl_stop)), float(fn(1.0 / wl_start))
+    return 1.0 / wl_stop, 1.0 / wl_start
+
+
+def freq_to_wavelength(frequencies):
+    """Map stage-reciprocal frequencies (1/mm) to wavelength (µm) via the
+    spectral calibration."""
+    wl_cal, rk_cal = get_spectral_calibration()
+    frequencies = np.asarray(frequencies)
+    if wl_cal is not None and rk_cal is not None:
+        from scipy.interpolate import interp1d
+        fn = interp1d(rk_cal, 1.0 / wl_cal, kind="linear", fill_value="extrapolate")
+        return 1.0 / fn(frequencies)
+    return 1.0 / frequencies
+
+
+def dft_to_wavelength(positions, signal, wl_start, wl_stop, n_freq):
+    """Non-uniform DFT of an interferogram onto the calibrated wavelength grid.
+
+    This is THE shared transform. The caller supplies a signal that is already
+    baseline-removed / apodized (and positions already motor-jitter calibrated);
+    this builds the frequency grid from the spectral calibration and evaluates
+
+        S(nu_f) = sum_j  dx_j * signal_j * exp(-2j*pi*pos_j*nu_f)
+
+    weighting each sample by its (possibly non-uniform) spacing dx_j.
+
+    Args:
+        positions : (n_pos,) calibrated stage axis (mm)
+        signal    : (n_pos,) or (n_pos, ...) — extra axes (e.g. pixels) are batched
+        wl_start, wl_stop : wavelength band (µm)
+        n_freq    : number of output spectral points
+
+    Returns:
+        (wavelengths (n_freq,) ascending, complex_spectrum (n_freq, ...))
+    """
+    positions = np.asarray(positions, dtype=float).reshape(-1)
+    start_freq, end_freq = frequency_limits(wl_start, wl_stop)
+    # Descending frequency so the wavelengths (∝ 1/freq) come out ascending.
+    frequencies = np.linspace(end_freq, start_freq, n_freq)
+    wavelengths = freq_to_wavelength(frequencies)
+
+    dpos = np.diff(positions)
+    dpos = np.append(dpos, dpos[-1] if len(dpos) > 0 else 0.0)
+
+    sig = np.asarray(signal)
+    weight = dpos.reshape((-1,) + (1,) * (sig.ndim - 1))   # broadcast over extra axes
+    weighted = sig * weight
+
+    kernel = np.exp(-2j * np.pi * positions[:, None] * frequencies[None, :])  # (n_pos, n_freq)
+    spectrum = np.tensordot(kernel, weighted, axes=([0], [0]))  # (n_freq, ...)
+    return wavelengths, spectrum
+
+
 def get_position_calibration():
     """Return (position_ref_mm, amplitude_ref) or (None, None).
 

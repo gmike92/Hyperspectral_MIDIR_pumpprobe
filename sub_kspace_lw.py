@@ -67,22 +67,6 @@ class HyperspectralProcessor:
         # Stage axis after motor-jitter correction (populated by compute_hyperspectral).
         self.calibrated_positions = None
 
-    def _get_frequency_limits(self, wl_start, wl_stop):
-        if self.wavelength_cal is not None and self.reciprocal_cal is not None:
-            from scipy.interpolate import interp1d
-            fn = interp1d(1.0 / self.wavelength_cal, self.reciprocal_cal,
-                          kind="linear", fill_value="extrapolate")
-            return float(fn(1.0 / wl_stop)), float(fn(1.0 / wl_start))
-        return 1.0 / wl_stop, 1.0 / wl_start
-
-    def _freq_to_wavelength(self, frequencies):
-        if self.wavelength_cal is not None and self.reciprocal_cal is not None:
-            from scipy.interpolate import interp1d
-            fn = interp1d(self.reciprocal_cal, 1.0 / self.wavelength_cal,
-                          kind="linear", fill_value="extrapolate")
-            return 1.0 / fn(frequencies)
-        return 1.0 / frequencies
-
     def compute_hyperspectral(self, positions, datacube,
                                wl_start=8.0, wl_stop=14.0,
                                apod_width=0.2, n_freq=200, reference_cube=None, invert=False):
@@ -104,7 +88,7 @@ class HyperspectralProcessor:
                 reference_cube = -reference_cube
 
         # Apply motor-nonlinearity calibration to the position axis (shared module).
-        from calibration import calibrate_position_axis
+        from calibration import calibrate_position_axis, dft_to_wavelength
         positions = calibrate_position_axis(positions)
         self.calibrated_positions = positions
 
@@ -165,37 +149,17 @@ class HyperspectralProcessor:
         else:
             signal, _, final_pos = preprocess(datacube)
 
-        # Frequency grid
-        start_freq, end_freq = self._get_frequency_limits(wl_start, wl_stop)
-        # Generate frequencies in descending order so that wavelengths (which are inversely proportional) are ascending
-        frequencies = np.linspace(end_freq, start_freq, n_freq)
-        wavelengths = self._freq_to_wavelength(frequencies)
+        # Shared DFT + calibration mapping (same transform as the other TWINS
+        # builders); the (n_pos, h, w) signal is batched over the pixel axes.
+        wavelengths, spec = dft_to_wavelength(final_pos, signal, wl_start, wl_stop, n_freq)
 
-        # DFT: for each frequency, sum over positions
-        # phase: (n_pos, n_freq)
-        pos = final_pos.reshape(-1, 1)
-        dpos = np.diff(final_pos)
-        dpos = np.append(dpos, dpos[-1] if len(dpos) > 0 else 0)
-
-        phase_kernel = np.exp(-2j * np.pi * pos * frequencies)  # (n_pos, n_freq)
-
-        n_pos_final = len(final_pos)
-        # DFT of signal
-        weighted = signal * dpos[:, np.newaxis, np.newaxis]  # (n_pos, h, w)
-        flat = weighted.reshape(n_pos_final, -1)     # (n_pos, h*w)
-        spec_flat = phase_kernel.conj().T @ flat  # (n_freq, h*w)
-        
-        # Phase correction
         if reference_cube is not None:
-            ref_weighted = ref_signal * dpos[:, np.newaxis, np.newaxis]
-            ref_flat = ref_weighted.reshape(n_pos_final, -1)
-            ref_spec_flat = phase_kernel.conj().T @ ref_flat
-            
-            phase_correction = np.angle(ref_spec_flat)
-            phased_spec_flat = spec_flat * np.exp(-1j * phase_correction)
-            spectrum_cube = np.real(phased_spec_flat).reshape(n_freq, h, w)
+            # Per-pixel phase correction from the pump-off reference.
+            _, ref_spec = dft_to_wavelength(final_pos, ref_signal, wl_start, wl_stop, n_freq)
+            phase_correction = np.angle(ref_spec)
+            spectrum_cube = np.real(spec * np.exp(-1j * phase_correction))
         else:
-            spectrum_cube = np.abs(spec_flat).reshape(n_freq, h, w)
+            spectrum_cube = np.abs(spec)
 
         return wavelengths, spectrum_cube
 

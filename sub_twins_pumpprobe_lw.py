@@ -205,27 +205,6 @@ class SpectrumProcessor:
 
         return data * window
 
-    def _get_frequency_limits(self, wl_start, wl_stop):
-        if self.wavelength_cal is not None and self.reciprocal_cal is not None:
-            from scipy.interpolate import interp1d
-            fn = interp1d(1.0 / self.wavelength_cal, self.reciprocal_cal,
-                          kind="linear", fill_value="extrapolate")
-            start_freq = fn(1.0 / wl_stop)
-            end_freq = fn(1.0 / wl_start)
-            return float(start_freq), float(end_freq)
-        else:
-            return 1.0 / wl_stop, 1.0 / wl_start
-
-    def _freq_to_wavelength(self, frequencies):
-        if self.wavelength_cal is not None and self.reciprocal_cal is not None:
-            from scipy.interpolate import interp1d
-            fn = interp1d(self.reciprocal_cal, 1.0 / self.wavelength_cal,
-                          kind="linear", fill_value="extrapolate")
-            inv_wavelength = fn(frequencies)
-            return 1.0 / inv_wavelength
-        else:
-            return 1.0 / frequencies
-
     def compute_complex_spectrum(self, positions, interferogram, n_points=10000, wl_start=8.0, wl_stop=14.0, apod_width=0.2, invert=False, symmetrize=False):
         if interferogram is None or positions is None:
             return None, None
@@ -240,7 +219,7 @@ class SpectrumProcessor:
             signal = -signal
 
         # Apply motor-nonlinearity calibration to the position axis.
-        from calibration import calibrate_position_axis
+        from calibration import calibrate_position_axis, dft_to_wavelength
         positions = calibrate_position_axis(positions)
         self.calibrated_positions = positions
 
@@ -277,21 +256,9 @@ class SpectrumProcessor:
 
         apodized = self.apodization(signal, positions, apod_width, force_center=eff_center)
 
-        start_freq, end_freq = self._get_frequency_limits(wl_start, wl_stop)
-        # Generate frequencies in descending order so that wavelengths (which are inversely proportional) are ascending
-        frequencies = np.linspace(end_freq, start_freq, n_points)
-
-        pos = positions.reshape(-1, 1)
-        dpos = np.diff(positions)
-        dpos = np.append(dpos, dpos[-1] if len(dpos) > 0 else 0)
-
-        phase = -2j * np.pi * pos * frequencies
-        
-        # Scipy.fft defines positive DFT with exp(-2j * pi * f * t). 
-        # But we must preserve the overall phase properties and the algebraic signs of the integral.
-        complex_spectrum = np.dot(apodized * dpos, np.exp(phase))
-
-        wavelengths = self._freq_to_wavelength(frequencies)
+        # Shared DFT + calibration mapping (identical across all TWINS builders).
+        wavelengths, complex_spectrum = dft_to_wavelength(
+            positions, apodized, wl_start, wl_stop, n_points)
         return wavelengths, complex_spectrum
 
     def _smooth_phase(self, phase, magnitude, order=PHASE_FIT_ORDER):

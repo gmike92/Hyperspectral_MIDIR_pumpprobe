@@ -79,6 +79,36 @@ def test_calibrate_position_axis_preserves_length():
 
 
 # ---------------------------------------------------------------------------
+# Shared DFT (calibration.dft_to_wavelength) — used by all TWINS builders
+# ---------------------------------------------------------------------------
+def test_dft_matches_explicit_formula_and_batches():
+    from calibration import dft_to_wavelength, frequency_limits, freq_to_wavelength
+    rng = np.random.default_rng(1)
+    pos = np.sort(23.8 + np.cumsum(np.abs(rng.normal(0.005, 5e-4, 128))))  # non-uniform
+    sig = np.cos(2 * np.pi * (pos - 24.3) / 0.03) * np.exp(-((pos - 24.3) / 0.05) ** 2)
+    n_freq = 256
+
+    # explicit reference: S(nu) = sum_j dx_j * sig_j * exp(-2j pi pos_j nu)
+    sf, ef = frequency_limits(8.0, 14.0)
+    freqs = np.linspace(ef, sf, n_freq)
+    dpos = np.append(np.diff(pos), np.diff(pos)[-1])
+    ref = (dpos * sig).dot(np.exp(-2j * np.pi * pos.reshape(-1, 1) * freqs))
+
+    wl, spec = dft_to_wavelength(pos, sig, 8.0, 14.0, n_freq)
+    assert spec.shape == (n_freq,)
+    assert np.max(np.abs(spec - ref)) < 1e-9          # exact match to the formula
+    assert np.allclose(wl, freq_to_wavelength(freqs))
+    assert wl[0] < wl[-1]                               # ascending wavelength
+
+    # batched (n_pos, h, w) case must equal per-pixel 1D transforms
+    cube = rng.normal(0, 1, (len(pos), 3, 2)) + sig[:, None, None]
+    _, spec_cube = dft_to_wavelength(pos, cube, 8.0, 14.0, n_freq)
+    assert spec_cube.shape == (n_freq, 3, 2)
+    _, spec_px = dft_to_wavelength(pos, cube[:, 1, 0], 8.0, 14.0, n_freq)
+    assert np.max(np.abs(spec_cube[:, 1, 0] - spec_px)) < 1e-12
+
+
+# ---------------------------------------------------------------------------
 # SpectrumProcessor (TWINS pump-probe)
 # ---------------------------------------------------------------------------
 def _processor():

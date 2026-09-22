@@ -140,26 +140,6 @@ class SpectrumProcessor:
 
         return data * window
 
-    def _get_frequency_limits(self, wl_start, wl_stop):
-        if self.wavelength_cal is not None and self.reciprocal_cal is not None:
-            from scipy.interpolate import interp1d
-            fn = interp1d(1.0 / self.wavelength_cal, self.reciprocal_cal,
-                          kind="linear", fill_value="extrapolate")
-            start_freq = fn(1.0 / wl_stop)
-            end_freq = fn(1.0 / wl_start)
-            return float(start_freq), float(end_freq)
-        else:
-            return 1.0 / wl_stop, 1.0 / wl_start
-
-    def _freq_to_wavelength(self, frequencies):
-        if self.wavelength_cal is not None and self.reciprocal_cal is not None:
-            from scipy.interpolate import interp1d
-            fn = interp1d(self.reciprocal_cal, 1.0 / self.wavelength_cal,
-                          kind="linear", fill_value="extrapolate")
-            inv_wavelength = fn(frequencies)
-            return 1.0 / inv_wavelength
-        else:
-            return 1.0 / frequencies
 
     def max_step_um(self, wl_short_um, samples_per_cycle=5):
         """Maximum allowed stage step (in µm) to get `samples_per_cycle` points
@@ -241,7 +221,7 @@ class SpectrumProcessor:
 
         # Apply motor-nonlinearity calibration: replace the nominal stage axis
         # with the jitter-corrected axis derived from parameters_int.txt.
-        from calibration import calibrate_position_axis
+        from calibration import calibrate_position_axis, dft_to_wavelength
         c_positions = calibrate_position_axis(self.positions)
         # Keep the corrected axis available for saving / inspection.
         self.calibrated_positions = c_positions
@@ -278,20 +258,11 @@ class SpectrumProcessor:
         self.symmetrized_signal = signal
         apodized = self.apodization(signal, c_positions, apod_width, force_center=eff_center)
 
-        start_freq, end_freq = self._get_frequency_limits(wl_start, wl_stop)
-        frequencies = np.linspace(end_freq, start_freq, n_points)
+        # Shared DFT + calibration mapping (identical across all TWINS builders).
+        wavelengths, complex_spectrum = dft_to_wavelength(
+            c_positions, apodized, wl_start, wl_stop, n_points)
+        spectrum = np.abs(complex_spectrum)
 
-        pos = c_positions.reshape(-1, 1)
-        dpos = np.diff(c_positions)
-        dpos = np.append(dpos, dpos[-1] if len(dpos) > 0 else 0)
-
-        phase = -2j * np.pi * pos * frequencies
-        spectrum = (dpos * apodized).dot(np.exp(phase))
-        spectrum = np.abs(spectrum)
-
-        wavelengths = self._freq_to_wavelength(frequencies)
-
-        self.freq = frequencies
         self.wavelengths = wavelengths
         self.spectrum = spectrum
         self.apodized_signal = apodized
